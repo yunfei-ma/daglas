@@ -1,0 +1,11 @@
+max_context_length: 500
+article_word_limit: 100
+lesson_level: beginner
+vocab_count: 5
+# sources:
+#   - name: svt
+#     sitemap: https://www.svt.se/sitemap.xml
+# llm_endpoint: http://localhost:11434/v1
+# llm_model: gemma4:latest
+# smtp_host: smtp.example.com
+# imap_host: imap.example.com
