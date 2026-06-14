@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,6 +49,10 @@ class DaglasConfig:
 
     # --- Email receiver ---
     email_receiver_poll_interval: int = 300
+
+    # --- Email sender queue ---
+    email_sender_queue_immediate_interval: int = 20
+    email_sender_queue_scheduled_interval: int = 300
 
     # --- Scheduling ---
     fetch_time: str = "06:00"

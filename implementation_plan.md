@@ -3,7 +3,7 @@
 ## Dependency graph
 
 ```
-config ──────────────────────────────────────────────────► (used by all)
+    config ──────────────────────────────────────────────────► (used by all)
     │
     ├──► context_fetcher ──► context_pool ──┐
     │                                        │
@@ -12,185 +12,195 @@ config ────────────────────────�
          ├── formatter                       │
          └── prompts/                        │
                                               ▼
-                                    email_sender ──► subscriber_store
-                                              │
-                                              ▼
-                                        scheduler
+                                    email_sender_queue ──► smtp
+                                         ▲           ▲
+                                         │           │  confirmations
+                                         │           │
+                                   lesson │   subscriber_store
+                                         │           ▲
+                                         │           │
+                                         └───────────┘
 
     (inbound, independent pipeline)
     imap ──► email_receiver ──► email_queue ──► email_processor ──► subscriber_store
-                                              │
-                                              └──► (archive namespace)
+                                                                      │
+                                                                      └──► email_sender_queue
 ```
 
-## Phase 1 — Foundation (done)
+## Recent updates
 
-| Task | Files | Status |
+| Date | Module | What |
 |---|---|---|
-| Project scaffold | `daglas/__init__.py`, `requirements.txt`, `run.py` | Done |
-| Config module | `daglas/config.py`, `daglas/config_default.yaml`, `tests/test_config.py` | Done |
-| Architecture doc | `AGENTS.md` (purpose, diagrams, module boundaries, conventions) | Done |
-| Coding standards | `.skills/coding_review.md` | Done |
-| opencode config | `opencode.json` (loads AGENTS.md + coding_review.md) | Done |
-| Task: config design | `tasks/config_module.md` | Done |
+| 2026-06-14 | Config | Added `email_sender_queue_*` interval fields |
+| 2026-06-14 | EmailQueue | Flat file storage (dropped date partitioning) |
+| 2026-06-14 | EmailReceiver | Pure sensor refactor + start/stop lifecycle |
 
-### Config module — what it ships
+## Module status
 
-- `DaglasConfig` dataclass with typed fields and hardcoded defaults as safety fallback.
-- `load_config()` — if `config.yaml` exists, load it directly; if missing, bootstrap from `daglas/config_default.yaml`.
-- Module-level `config` singleton populated by `run.py`.
-- `sources: list[dict]` field for context fetcher.
-- IMAP config fields (`imap_host`, `imap_port`, `imap_user`, `imap_password`) for email receiver.
+Each module links to its engineering task doc and tracks current status.
+Latest updates are appended — never overwritten — so the section doubles as a changelog.
 
-## Phase 2 — Content pipeline (done)
+### Config
 
-### Task 2a: ContextFetcher
+- **Task doc**: `tasks/config_module.md`
+- **Status**: `done`
+- **Dependencies**: none
+- **Tests**: `tests/test_config.py` (7)
+- **Latest**:
+  - 2026-06-10 — Initial build. `DaglasConfig` dataclass with 22 fields, `load_config()`, first-run bootstrap from `config_default.yaml`.
 
-| Item | Detail |
-|---|---|
-| **Design doc** | `tasks/context_fetcher.md` — done |
-| **Implementation** | `daglas/context_fetcher.py`, `tests/test_context_fetcher.py` — done |
-| **Depends on** | Config module (reads `sources` list) |
-| **Pipeline** | `Discover → Crawl → Extract → Deduplicate → Store` |
-| **Discovery** | Parse sitemaps (flat + index) for article URLs |
-| **Extraction** | `trafilatura` for article body, title, date, author, language |
-| **Fallback** | BeautifulSoup `<article>` / `<main>` extraction |
-| **Dedup** | By URL within a single run |
-| **Config** | `sources` list in `config.yaml` — each entry has `name` + `sitemap` URL |
-| **Output** | `Article` dataclass → JSON Lines to ContextPool |
+### ContextFetcher
 
-### Task 2b: ContextPool
+- **Task doc**: `tasks/context_fetcher.md`
+- **Status**: `done`
+- **Dependencies**: Config
+- **Tests**: `tests/test_context_fetcher.py` (11)
+- **Latest**:
+  - 2026-06-10 — Initial build. Sitemap discovery (flat + index), trafilatura extraction, BeautifulSoup fallback, URL dedup.
 
-| Item | Detail |
-|---|---|
-| **Files** | `daglas/context_pool.py`, `tests/test_context_pool.py` — done |
-| **Depends on** | Config module (reads `data_dir`) |
-| **Storage** | JSON Lines file (`data/<date>.jsonl`) — one `Article` JSON per line |
-| **API** | `store_articles(articles)`, `retrieve_articles() → list[dict]`, `clear()` |
-| **Date partitioning** | Creates a new file per day automatically |
+### ContextPool
 
-## Phase 3 — Lesson module (done)
+- **Task doc**: `tasks/context_pool.md`
+- **Status**: `done`
+- **Dependencies**: Config
+- **Tests**: `tests/test_context_pool.py` (4)
+- **Latest**:
+  - 2026-06-10 — Initial build. JSONL per date under `data/<YYYY-MM-DD>.jsonl`.
 
-### Task 3a: LLM abstraction
+### EmailQueue
 
-| Item | Detail |
-|---|---|
-| **Files** | `daglas/lesson/llm.py`, `tests/lesson/test_llm.py` — done |
-| **Depends on** | Config module (reads `llm_endpoint`, `llm_model`) |
-| **Backends** | ollama (default), mlx, llama.cpp — pluggable via `LlmProvider` protocol |
-| **API** | `prompt(system: str, user: str) → str` |
-| **Config** | `llm_endpoint: http://localhost:11434/v1` (ollama-compatible) |
+- **Task doc**: `tasks/email_queue.md`
+- **Status**: `done`
+- **Dependencies**: Config
+- **Tests**: `tests/test_email_queue.py` (9)
+- **Latest**:
+  - 2026-06-14 — Storage switched from date-partitioned (`data/email_queue/<ns>/<date>.jsonl`) to flat file (`data/email_queue/<ns>.jsonl`). Added `queued_at` timestamp. (See task doc Discussion.)
+  - 2026-06-13 — Initial build. `RawEmail` dataclass, `push`/`pop`/`drain`, listener pattern via `on_push`.
 
-### Task 3b: Generator
+### EmailReceiver
 
-| Item | Detail |
-|---|---|
-| **Files** | `daglas/lesson/generator.py`, `tests/lesson/test_generator.py` — done |
-| **Depends on** | ContextPool, LLM, Config, prompts/ |
-| **Flow** | Retrieve articles from pool → build prompt with templates → call LLM → parse structured lesson |
-| **Context truncation** | If article text exceeds `max_context_length`, truncate/summarize before prompting |
+- **Task doc**: `tasks/email_receiver.md`
+- **Status**: `done`
+- **Dependencies**: Config, EmailQueue
+- **Tests**: `tests/test_email_receiver.py` (14)
+- **Verification**: `scripts/email_receiver_verify.py`
+- **Latest**:
+  - 2026-06-14 — Refactored to pure sensor. Stripped classification logic. Added `start()`/`stop()` lifecycle with `is_running` property, background thread, state machine.
+  - 2026-06-10 — Initial build. IMAP polling, UNSEEN detection, raw email push to EmailQueue.
 
-### Task 3c: Formatter
+### EmailProcessor
 
-| Item | Detail |
-|---|---|
-| **Files** | `daglas/lesson/formatter.py`, `tests/lesson/test_formatter.py` — done |
-| **Depends on** | Config module (reads `lesson_level`) |
-| **Output** | `Email` dataclass with `subject`, `html_body`, `text_body` |
-| **Content** | Vocabulary list, grammar point, example sentences, short exercise |
+- **Task doc**: `tasks/email_processor.md`
+- **Status**: `done`
+- **Dependencies**: EmailQueue
+- **Tests**: `tests/test_email_processor.py` (8)
+- **Latest**:
+  - 2026-06-14 — Simplified to blind notification hub. Removed `ClassificationResult`. Listeners receive `(sender, subject, body)`. Registers itself on `EmailQueue.on_push("incoming")`.
 
-## Phase 4 — Delivery (done)
+### EmailSender
 
-### Task 4a: SubscriberStore
+- **Task doc**: `tasks/email_sender.md`
+- **Status**: `done` (now internal to EmailSenderQueue)
+- **Dependencies**: Config
+- **Tests**: `tests/test_email_sender.py` (8)
+- **Latest**:
+  - 2026-06-14 — Made internal. `SmtpSender` is now created and owned by `EmailSenderQueue`. No module outside `email_sender_queue.py` imports it directly.
 
-| Item | Detail |
-|---|---|
-| **Files** | `daglas/subscriber_store.py`, `tests/test_subscriber_store.py` — done |
-| **Storage** | Flat file (`subscribers.txt`, one email per line) |
-| **API** | `list() → list[str]`, `add(email)`, `remove(email)` |
+### EmailSenderQueue
 
-### Task 4b: EmailSender
+- **Task doc**: `tasks/email_sender_queue.md`
+- **Status**: `done`
+- **Dependencies**: Config, EmailSender (internal)
+- **Tests**: `tests/test_email_sender_queue.py` (13)
+- **Latest**:
+  - 2026-06-14 — Initial build. `SendRequest` dataclass, two JSONL files (immediate + scheduled), background thread dispatch, configurable poll intervals.
 
-| Item | Detail |
-|---|---|
-| **Files** | `daglas/email_sender.py`, `tests/test_email_sender.py` — done |
-| **Depends on** | Config (SMTP settings), SubscriberStore, Formatter (Email output) |
-| **Transport** | smtplib (stdlib) |
-| **Config** | `smtp_host`, `smtp_port`, `smtp_user`, `smtp_password`, `from_address` |
+### Generator
 
-## Phase 4c — Inbound Email (in progress)
+- **Task doc**: `tasks/lesson_generator.md`
+- **Status**: `done`
+- **Dependencies**: ContextPool, LLM, Config, prompts/
+- **Tests**: `tests/lesson/test_generator.py` (5)
+- **Latest**:
+  - 2026-06-10 — Initial build. Prompt assembly from `prompts/system.md` and `prompts/user.md`, context truncation, dry-run mode.
 
-**Architecture**: `IMAP → EmailReceiver (pure sensor) → EmailQueue (JSONL) → EmailProcessor (classify + dispatch) → SubscriberStore`
+### Formatter
 
-### Task 4c-i: EmailQueue (built)
+- **Task doc**: `tasks/lesson_formatter.md`
+- **Status**: `done`
+- **Dependencies**: Config
+- **Tests**: `tests/lesson/test_formatter.py` (4)
+- **Latest**:
+  - 2026-06-10 — Initial build. `Email` dataclass with subject/html/text, markdown-to-HTML conversion.
 
-| Item | Detail |
-|---|---|
-| **Design doc** | `tasks/email_queue.md` — done |
-| **Implementation** | `daglas/email_queue.py` — done |
-| **Tests** | `tests/test_email_queue.py` (9 tests) — done |
-| **Depends on** | Config module (reads `data_dir`) |
-| **Storage** | JSONL per namespace per date: `data/email_queue/<namespace>/<date>.jsonl` |
-| **API** | `push(namespace, RawEmail)`, `pop(namespace) → RawEmail | None`, `drain(namespace) → list[RawEmail]` |
-| **Notification** | Listener pattern via `on_push(namespace, callback)` — avoids circular import with EmailProcessor |
+### LLM
 
-### Task 4c-ii: EmailProcessor (built)
+- **Task doc**: `tasks/lesson_llm.md`
+- **Status**: `done`
+- **Dependencies**: Config
+- **Tests**: `tests/lesson/test_llm.py` (7)
+- **Latest**:
+  - 2026-06-10 — Initial build. `LlmProvider` protocol, `OllamaProvider`/`MlxProvider`/`LlamaCppProvider` implementations, `create_provider()` factory.
 
-| Item | Detail |
-|---|---|
-| **Design doc** | `tasks/email_processor.md` — done |
-| **Implementation** | `daglas/email_processor.py` — done |
-| **Tests** | `tests/test_email_processor.py` (11 tests) — done |
-| **Depends on** | EmailQueue, SubscriberStore |
-| **Classification** | Substring match on subject + body against configured patterns per action |
-| **Actor model** | `register(action, callable, patterns?)` — actors receive `(sender, subject, body)` |
-| **Default actors** | `subscribe` → `SubscriberStore.add`, `unsubscribe` → `SubscriberStore.remove`, `unknown` → archive |
-| **Registration order** | "unsubscribe" before "subscribe" — when both patterns match, unsubscribe wins |
+### Scheduler
 
-### Task 4c-iii: EmailReceiver (refactored + lifecycle)
+- **Task doc**: `tasks/scheduler.md` — not created
+- **Status**: `not_started`
+- **Dependencies**: all modules
+- **Tests**: none
+- **Latest**:
+  - (not started)
 
-| Item | Detail |
-|---|---|
-| **Design doc** | `tasks/email_receiver.md` — updated (pure sensor + lifecycle) |
-| **Implementation** | `daglas/email_receiver.py` — **refactored + start/stop** |
-| **Tests** | `tests/test_email_receiver.py` (11 tests) — **rewritten + lifecycle tests** |
-| **What changed** | Pure sensor (no classification) + start/stop lifecycle with `is_running` property, background thread, state machine |
-| **Verification** | `scripts/email_receiver_verify.py` — still valid (tests IMAP connection) |
+### SubscriberStore
 
-#### Refactoring diff
+- **Task doc**: `tasks/subscriber_store.md`
+- **Status**: `done`
+- **Dependencies**: Config, EmailSenderQueue, LLM (optional)
+- **Tests**: `tests/test_subscriber_store.py` (21)
+- **Verification**: `scripts/subscriber_store_verify.py`
+- **Latest**:
+  - 2026-06-14 — Refactored to use `EmailSenderQueue` instead of `SmtpSender`. Added bilingual welcome/unsubscribe templates. Added name extraction via LLM. Per-user notes with `Email:` + `Name:` headers.
+  - 2026-06-10 — Initial build. Flat-file subscriber list, basic add/remove.
 
-| Aspect | Old | New |
-|---|---|---|
-| Constructor param | `store` (SubscriberStore) | `queue` (EmailQueue) + `_stop_event`, `_thread` |
-| Classification | Inline `"subscribe"`/`"unsubscribe"` matching | None — push raw, no inspection |
-| Return type | `SubscriptionResult` | `int` (count of pushed emails) |
-| Message handler | Classifies + calls store.add/remove | Pushes `RawEmail` to queue, marks `\Seen` |
-| Test approach | Verify subscriber list side effects | Verify `EmailQueue.push` calls with `RawEmail` data |
-| Lifecycle control | None (blocking `run_loop` only) | `start()` / `stop()` / `is_running` via threading |
-| State diagram | None | Mermaid state machine in task doc (Stopped → Running → Stopped) |
+## Cross-cutting items
 
-## Phase 5 — Automation (not started)
+These are not standalone modules but span the whole project.
 
-### Task 5: Scheduler
+### run.py
 
-| Item | Detail |
-|---|---|
-| **Design doc** | `tasks/scheduler.md` — **not created** |
-| **Implementation** | `daglas/scheduler.py`, `launchd/daglas.plist` — **not built** |
-| **Depends on** | All modules |
-| **Flow** | `run_fetch()` → `run_pipeline()` → `send_email()` |
-| **Trigger** | launchd plist (macOS native) or crontab |
-| **Install** | Documented single command (`launchctl load ...`) |
+- **Status**: `done`
+- **Tests**: none (integration tested manually)
+- **Latest**:
+  - 2026-06-14 — Wired `EmailSenderQueue` lifecycle (start/stop), inbound pipeline wiring, `_resolve_send_time`, `_queue_lesson`, `--send` flag, `--max-articles` flag.
 
-## Phase 6 — Polish (partial)
+### Prompts
 
-- `run.py --dry-run` flag — done
-- `run.py --html` flag — done (optional, off by default)
-- `run.py --fetch-only` / `--generate-only` / `--send` for debugging individual phases — done
-- Logging throughout (stdlib `logging`) — partial
-- Error reporting (email on failure) — not started
+- **Status**: `done`
+- **Files**: `prompts/system.md`, `prompts/user.md`, `prompts/name_extraction_system.md`, `prompts/name_extraction_user.md`
+- **Latest**:
+  - 2026-06-14 — Added name extraction prompts.
+  - 2026-06-10 — Initial lesson generation prompts.
 
-## Files checklist (summary)
+### Integration verification scripts
+
+- **Status**: `partial`
+- **Files**: `scripts/email_receiver_verify.py` (done), `scripts/subscriber_store_verify.py` (done), `scripts/config_verify.py` (todo), `scripts/context_fetcher_verify.py` (todo)
+- **Latest**:
+  - 2026-06-14 — `subscriber_store_verify.py` added. Exercises full subscribe/unsubscribe flow with real SmtpSender.
+
+### Logging
+
+- **Status**: `partial`
+- **Latest**:
+  - 2026-06-10 — Stdlib `logging` throughout, httpx/urllib3 muted.
+
+### Error reporting
+
+- **Status**: `not_started`
+- **Latest**:
+  - (not started)
+
+## Files checklist
 
 ```
 daglas/
@@ -200,10 +210,11 @@ daglas/
 ├── context_fetcher.py           ✓
 ├── context_pool.py              ✓
 ├── email_queue.py                ✓
-├── email_processor.py            ✓
-├── email_receiver.py             ✓
-├── subscriber_store.py           ✓
-├── email_sender.py               ✓
+├── email_processor.py            ✓  (simplified)
+├── email_receiver.py             ✓  (start/stop lifecycle)
+├── email_sender_queue.py         ✓
+├── subscriber_store.py           ✓  (bilingual templates, email headers, name extraction)
+├── email_sender.py               ✓  (internal to EmailSenderQueue)
 ├── scheduler.py                  ❏  (to build)
 ├── config_verify.py             ❏  (verify script, to build)
 ├── context_fetcher_verify.py    ❏  (verify script, to build)
@@ -215,6 +226,8 @@ daglas/
 prompts/                           ✓
 ├── system.md                     ✓
 ├── user.md                       ✓
+├── name_extraction_system.md     ✓
+├── name_extraction_user.md       ✓
 tests/
 ├── test_config.py                ✓
 ├── test_context_fetcher.py       ✓
@@ -224,6 +237,7 @@ tests/
 ├── test_email_receiver.py        ✓
 ├── test_subscriber_store.py      ✓
 ├── test_email_sender.py          ✓
+├── test_email_sender_queue.py    ✓  (13 tests)
 └── lesson/
     ├── test_generator.py         ✓
     ├── test_formatter.py         ✓
@@ -235,18 +249,21 @@ opencode.json                      ✓
 AGENTS.md                          ✓
 implementation_plan.md             ✓
 scripts/
-└── email_receiver_verify.py      ✓
+├── email_receiver_verify.py      ✓
+└── subscriber_store_verify.py    ✓  (251 lines)
 tasks/
 ├── config_module.md              ✓
 ├── context_fetcher.md            ✓
 ├── context_pool.md               ✓
 ├── lesson_llm.md                 ✓
 ├── lesson_generator.md           ✓
-├── lesson_formatter.md           ✓
-├── subscriber_store.md           ✓
-├── email_sender.md               ✓
+├── lesson_formatter.md           ✓  (updated)
+├── subscriber_store.md           ✓  (updated)
+├── email_sender.md               ✓  (updated — SmtpSender is now internal)
+├── email_sender_queue.md         ✓  (created)
 ├── email_receiver.md             ✓  (updated)
 ├── email_queue.md                ✓  (updated)
-├── email_processor.md            ✓  (updated)
+├── email_processor.md            ✓  (simplified)
+├── run.md                        ✓  (updated)
 └── scheduler.md                  ❏  (to create)
 ```

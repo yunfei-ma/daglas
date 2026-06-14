@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import json
 import logging
@@ -68,6 +70,7 @@ class EmailQueue:
     def push(self, namespace: str, email: RawEmail) -> None:
         if not email.queued_at:
             email.queued_at = datetime.now(timezone.utc).isoformat()
+        logger.info("Queued: namespace=%s sender=%s", namespace, email.sender)
         path = self._namespace_path(namespace)
         path.parent.mkdir(parents=True, exist_ok=True)
         line = self._serialize(email)

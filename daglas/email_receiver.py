@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import email
 import imaplib
 import logging
@@ -96,6 +98,7 @@ class EmailReceiver:
             return False
         subject = msg["Subject"] or ""
         body = self._get_body(msg)
+        logger.info("Received: from=%s subject=%s", sender, subject)
         raw_email = RawEmail(
             sender=sender, subject=subject, body=body, raw_bytes=raw_bytes
         )

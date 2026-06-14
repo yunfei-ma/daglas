@@ -2,6 +2,9 @@ max_context_length: 500
 article_word_limit: 100
 lesson_level: beginner
 vocab_count: 5
+# email_receiver_poll_interval: 300
+# email_sender_queue_immediate_interval: 20
+# email_sender_queue_scheduled_interval: 300
 # sources:
 #   - name: svt
 #     sitemap: https://www.svt.se/sitemap.xml
