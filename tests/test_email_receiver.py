@@ -169,3 +169,54 @@ class TestRunLoop:
 
         assert mock_sleep.call_count == 1
         assert mock_sleep.call_args[0][0] == 0.0
+
+
+class TestLifecycle:
+    def test_is_running_after_start(self):
+        queue = MagicMock()
+        receiver = EmailReceiver(queue, poll_interval=300)
+
+        with patch.object(receiver, "_connect", lambda: MockIMAP()):
+            receiver.start()
+        assert receiver.is_running is True
+        receiver.stop()
+
+    def test_stop_clears_is_running(self):
+        queue = MagicMock()
+        receiver = EmailReceiver(queue, poll_interval=300)
+
+        with patch.object(receiver, "_connect", lambda: MockIMAP()):
+            receiver.start()
+        assert receiver.is_running is True
+        receiver.stop()
+        assert receiver.is_running is False
+
+    def test_start_idempotent(self):
+        queue = MagicMock()
+        receiver = EmailReceiver(queue, poll_interval=300)
+
+        with (
+            patch.object(receiver, "_connect", lambda: MockIMAP()),
+            patch.object(receiver, "check_once", return_value=0),
+        ):
+            receiver.start()
+            thread_id = id(receiver._thread)
+            receiver.start()
+            assert id(receiver._thread) == thread_id
+            receiver.stop()
+
+    def test_stop_without_start_is_safe(self):
+        queue = MagicMock()
+        receiver = EmailReceiver(queue)
+        receiver.stop()
+        assert receiver.is_running is False
+
+    def test_run_loop_obeys_stop_event(self):
+        queue = MagicMock()
+        receiver = EmailReceiver(queue, poll_interval=0.01)
+
+        with patch.object(receiver, "_connect", lambda: MockIMAP()):
+            receiver.start()
+            receiver.stop()
+
+        assert receiver.is_running is False
