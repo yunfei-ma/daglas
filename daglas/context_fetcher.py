@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+import threading
 from dataclasses import dataclass, field
 
 import httpx
 import trafilatura
 from bs4 import BeautifulSoup
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -158,3 +163,57 @@ def _safe_str(val) -> str | None:
     if val is None:
         return None
     return str(val)
+
+
+class ContextFetcherDaemon:
+    def __init__(
+        self,
+        source_configs: list[dict],
+        pool,
+        *,
+        fetch_time: str = "06:00",
+        poll_interval: int = 86400,
+        max_articles: int = 3,
+    ):
+        self._source_configs = source_configs
+        self._pool = pool
+        self._fetch_time = fetch_time
+        self._poll_interval = poll_interval
+        self._max_articles = max_articles
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self) -> None:
+        if self.is_running:
+            logger.warning("ContextFetcherDaemon is already running")
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        logger.info("ContextFetcherDaemon started")
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+        logger.info("ContextFetcherDaemon stopped")
+
+    def fetch_once(self) -> FetchResult:
+        return fetch_context(
+            self._source_configs,
+            self._pool,
+            max_articles=self._max_articles,
+        )
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            result = self.fetch_once()
+            if result.articles:
+                logger.info("Fetched %d article(s)", len(result.articles))
+            for err in result.errors:
+                logger.warning("Fetch error: %s", err)
+            self._stop_event.wait(timeout=self._poll_interval)

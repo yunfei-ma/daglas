@@ -89,44 +89,8 @@ def _load_saved_lesson() -> Email | None:
     return format_email(lesson_text)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Dagläs — Daily Swedish Lesson")
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Generate lesson without calling LLM"
-    )
-    parser.add_argument(
-        "--fetch-only",
-        action="store_true",
-        help="Only fetch context, skip lesson generation",
-    )
-    parser.add_argument(
-        "--generate-only",
-        action="store_true",
-        help="Generate lesson from existing context, skip send and fetch",
-    )
-    parser.add_argument(
-        "--send",
-        action="store_true",
-        help="Send the lesson to subscribers",
-    )
-    parser.add_argument(
-        "--html", action="store_true", help="Also generate HTML version"
-    )
-    parser.add_argument(
-        "--max-articles", type=int, default=3, help="Max articles to fetch (default: 3)"
-    )
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(name)s] %(message)s",
-        stream=sys.stderr,
-    )
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-    daglas_config.config = load_config()
+def _run_interval(args) -> None:
     cfg = daglas_config.config
-
     sender_queue = EmailSenderQueue()
     sender_queue.start()
 
@@ -135,8 +99,6 @@ def main() -> None:
         count = receiver.check_once()
         logger = logging.getLogger("run")
         logger.info("Inbound: %d email(s) processed", count)
-    else:
-        logger = logging.getLogger("run")
 
     if not cfg.llm_endpoint and not args.fetch_only and not args.send:
         print("ERROR: llm_endpoint not configured in config.yaml")
@@ -164,6 +126,7 @@ def main() -> None:
             print("No sources configured in config.yaml")
 
     if args.fetch_only:
+        sender_queue.stop()
         return
 
     articles = pool.retrieve_articles()
@@ -182,6 +145,7 @@ def main() -> None:
     if args.dry_run:
         print("Dry-run mode — no LLM call made.")
         print(f"Would prompt with {len(articles)} article(s)")
+        sender_queue.stop()
         return
 
     if not lesson_text:
@@ -211,11 +175,98 @@ def main() -> None:
         _queue_lesson(email, "immediate", sender_queue)
         print("Waiting for queue to dispatch...")
         time.sleep(30)
-        sender_queue.stop()
     else:
         _queue_lesson(email, cfg.send_time, sender_queue)
-        sender_queue.stop()
         print("Lesson queued for scheduled dispatch.")
+
+    sender_queue.stop()
+
+
+def _run_persistent() -> None:
+    cfg = daglas_config.config
+    sender_queue = EmailSenderQueue()
+    sender_queue.start()
+
+    receiver = None
+    if cfg.imap_host:
+        receiver = _wire_inbound_pipeline(cfg, sender_queue)
+        receiver.start()
+
+    print("Dagläs running. Press Ctrl+C or type q+Enter to quit.")
+    try:
+        while True:
+            try:
+                line = input()
+                if line.strip().lower() == "q":
+                    print("Shutting down...")
+                    break
+            except EOFError:
+                break
+            except KeyboardInterrupt:
+                break
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+
+    if receiver:
+        receiver.stop()
+    sender_queue.stop()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Dagläs — Daily Swedish Lesson")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Generate lesson without calling LLM"
+    )
+    parser.add_argument(
+        "--fetch-only",
+        action="store_true",
+        help="Only fetch context, skip lesson generation",
+    )
+    parser.add_argument(
+        "--generate-only",
+        action="store_true",
+        help="Generate lesson from existing context, skip send and fetch",
+    )
+    parser.add_argument(
+        "--send",
+        action="store_true",
+        help="Send the lesson to subscribers",
+    )
+    parser.add_argument(
+        "--html", action="store_true", help="Also generate HTML version"
+    )
+    parser.add_argument(
+        "--max-articles",
+        type=int,
+        default=3,
+        help="Max articles to fetch (default: 3)",
+    )
+    parser.add_argument(
+        "--interval",
+        action="store_true",
+        help="Run pipeline once and exit (for launchd interval / CI)",
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(name)s] %(message)s",
+        stream=sys.stderr,
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    daglas_config.config = load_config()
+
+    if (
+        args.interval
+        or args.fetch_only
+        or args.generate_only
+        or args.dry_run
+        or args.send
+    ):
+        _run_interval(args)
+    else:
+        _run_persistent()
 
 
 if __name__ == "__main__":

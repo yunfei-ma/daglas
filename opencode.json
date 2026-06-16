@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    "AGENTS.md",
+    ".skills/coding_review.md",
+    ".skills/mermaid_safety.md",
+    ".skills/uml_architecture.md",
+    ".skills/uml_class.md",
+    ".skills/uml_component.md",
+    ".skills/uml_sequence.md",
+    ".skills/uml_state_machine.md"
+  ]
+}

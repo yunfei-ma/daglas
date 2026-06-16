@@ -56,6 +56,7 @@ class DaglasConfig:
 
     # --- Scheduling ---
     fetch_time: str = "06:00"
+    context_fetcher_poll_interval: int = 86400  # check once daily after initial fetch
     send_time: str = "07:00"
 
     # --- Paths ---

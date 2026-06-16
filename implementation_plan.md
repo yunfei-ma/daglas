@@ -31,9 +31,9 @@
 
 | Date | Module | What |
 |---|---|---|
-| 2026-06-14 | Config | Added `email_sender_queue_*` interval fields |
-| 2026-06-14 | EmailQueue | Flat file storage (dropped date partitioning) |
-| 2026-06-14 | EmailReceiver | Pure sensor refactor + start/stop lifecycle |
+| 2026-06-15 | LaunchdIntegration | Implemented: `scripts/install_launchd.py`, `scripts/uninstall_launchd.py`, `tests/test_launchd.py`. Two plists: `com.daglas.outbound` (StartInterval 1800) and `com.daglas.runner` (KeepAlive + RunAtLoad). |
+| 2026-06-15 | OutboundPipeline | Removed — redundant daemon wrapper. launchd fires `run.py --interval` directly. |
+| 2026-06-14 | ContextFetcher | Daemon lifecycle implemented: `ContextFetcherDaemon` class |
 
 ## Module status
 
@@ -53,9 +53,10 @@ Latest updates are appended — never overwritten — so the section doubles as 
 
 - **Task doc**: `tasks/context_fetcher.md`
 - **Status**: `done`
-- **Dependencies**: Config
+- **Dependencies**: Config, ContextPool
 - **Tests**: `tests/test_context_fetcher.py` (11)
 - **Latest**:
+  - 2026-06-14 — Added `ContextFetcherDaemon` with `start()`/`stop()`/`is_running`/`_run()`/`fetch_once()` — matches EmailReceiver daemon pattern.
   - 2026-06-10 — Initial build. Sitemap discovery (flat + index), trafilatura extraction, BeautifulSoup fallback, URL dedup.
 
 ### ContextPool
@@ -142,14 +143,24 @@ Latest updates are appended — never overwritten — so the section doubles as 
 - **Latest**:
   - 2026-06-10 — Initial build. `LlmProvider` protocol, `OllamaProvider`/`MlxProvider`/`LlamaCppProvider` implementations, `create_provider()` factory.
 
+### OutboundPipeline (removed)
+
+- **Task doc**: `tasks/pipeline.md` — deleted (2026-06-15)
+- **Status**: `removed`
+- **Rationale**: Daemon wrapper was redundant. launchd fires `run.py --interval`,
+  which calls `fetch_context()`, `generate_lesson()`, `format_email()`, and
+  `_queue_lesson()` directly. `daglas/pipeline.py` had no unique logic beyond
+  calling these modules in sequence.
+
 ### Scheduler
 
-- **Task doc**: `tasks/scheduler.md` — not created
-- **Status**: `not_started`
-- **Dependencies**: all modules
+- **Task doc**: none — cancelled by design decision (2026-06-14)
+- **Status**: `cancelled`
+- **Dependencies**: none
 - **Tests**: none
 - **Latest**:
-  - (not started)
+  - 2026-06-15 — Confirmed: each pipeline has internal scheduling. `run.py` just starts/stops. No separate scheduler needed.
+  - 2026-06-14 — Cancelled. EmailReceiver and EmailSenderQueue already have their own polling loops. Outbound pipeline runs once at startup via `run.py`. A separate Scheduler would add complexity without benefit.
 
 ### SubscriberStore
 
@@ -171,6 +182,7 @@ These are not standalone modules but span the whole project.
 - **Status**: `done`
 - **Tests**: none (integration tested manually)
 - **Latest**:
+  - 2026-06-15 — Renamed `--one-shot` to `--interval`, `_run_one_shot` to `_run_interval`.
   - 2026-06-14 — Wired `EmailSenderQueue` lifecycle (start/stop), inbound pipeline wiring, `_resolve_send_time`, `_queue_lesson`, `--send` flag, `--max-articles` flag.
 
 ### Prompts
@@ -183,9 +195,10 @@ These are not standalone modules but span the whole project.
 
 ### Integration verification scripts
 
-- **Status**: `partial`
-- **Files**: `scripts/email_receiver_verify.py` (done), `scripts/subscriber_store_verify.py` (done), `scripts/config_verify.py` (todo), `scripts/context_fetcher_verify.py` (todo)
+- **Status**: `done`
+- **Files**: `scripts/email_receiver_verify.py` (done), `scripts/subscriber_store_verify.py` (done), `scripts/config_verify.py` (done), `scripts/context_fetcher_verify.py` (done)
 - **Latest**:
+  - 2026-06-14 — Added `config_verify.py` and `context_fetcher_verify.py`.
   - 2026-06-14 — `subscriber_store_verify.py` added. Exercises full subscribe/unsubscribe flow with real SmtpSender.
 
 ### Logging
@@ -214,10 +227,9 @@ daglas/
 ├── email_receiver.py             ✓  (start/stop lifecycle)
 ├── email_sender_queue.py         ✓
 ├── subscriber_store.py           ✓  (bilingual templates, email headers, name extraction)
+├── pipeline.py                   ✗  (removed)
 ├── email_sender.py               ✓  (internal to EmailSenderQueue)
-├── scheduler.py                  ❏  (to build)
-├── config_verify.py             ❏  (verify script, to build)
-├── context_fetcher_verify.py    ❏  (verify script, to build)
+├── scheduler.py                  ✗  (cancelled — not needed)
 └── lesson/
     ├── __init__.py               ✓
     ├── generator.py              ✓
@@ -249,6 +261,8 @@ opencode.json                      ✓
 AGENTS.md                          ✓
 implementation_plan.md             ✓
 scripts/
+├── config_verify.py              ✓
+├── context_fetcher_verify.py     ✓
 ├── email_receiver_verify.py      ✓
 └── subscriber_store_verify.py    ✓  (251 lines)
 tasks/
@@ -264,6 +278,7 @@ tasks/
 ├── email_receiver.md             ✓  (updated)
 ├── email_queue.md                ✓  (updated)
 ├── email_processor.md            ✓  (simplified)
+├── pipeline.md                   ✗  (deleted — redundant)
 ├── run.md                        ✓  (updated)
-└── scheduler.md                  ❏  (to create)
+└── scheduler.md                  ✗  (cancelled — not needed)
 ```
