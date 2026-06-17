@@ -1,47 +1,61 @@
 # Dagläs — Daily Swedish Lessons
 
-Generate one structured Swedish lesson email every morning, grounded in real-world, current context. Runs locally via a local LLM (ollama, mlx, llama.cpp).
+Generate one structured Swedish lesson email every morning, grounded in
+real-world, current context. Runs locally via a local LLM (ollama, mlx,
+llama.cpp).
 
 ## Architecture
 
-Modular pipeline with independent, replaceable modules:
+Each module is a standalone file with one clear responsibility.
 
+**lessonGenerator** (daily lesson generation):
+
+```mermaid
+graph LR
+    classDef core    fill:#bbe5d5,stroke:#0F6E56,color:#085041
+    classDef store   fill:#cadbea,stroke:#185FA5,color:#0C447C
+    classDef external fill:#f1dfc0,stroke:#BA7517,color:#633806
+
+    Site{{svt.se / dn.se}}:::external
+    Fetcher[ContextFetcher]:::core
+    Pool[(ContextPool)]:::store
+    LLM{{Ollama / mlx}}:::external
+    Generator[LessonGenerator]:::core
+    Formatter[Formatter]:::core
+    Sender[EmailSenderQueue]:::core
+    Subscribers[(SubscriberStore)]:::store
+    SMTP{{SMTP}}:::external
+
+    Site -->|articles| Fetcher
+    Fetcher -->|store| Pool
+    Pool -->|context| Generator
+    Generator -->|prompt| LLM
+    LLM -->|lesson| Generator
+    Generator -->|text| Formatter
+    Formatter -->|email| Sender
+    Sender -->|dispatch| SMTP
+    Sender -->|list| Subscribers
 ```
-+---------------------+     +---------------------+     +---------------------+
-|   Input Channels    | --> |     Processing      | --> |       Output        |
-+---------------------+     +---------------------+     +---------------------+
-| Web Fetcher         |     | Web Context (pool)  |     | Email Sender        |
-| Email Receiver      |     | Email Queue         |     +---------------------+
-+---------------------+     | Email Processor     |
-                            | Subscriber Store    |
-                            | +-----------------+ |
-                            | |     Lesson      | |
-                            | | Generator       | |
-                            | | LLM             | |
-                            | | Formatter       | |
-                            | | Lesson Queue    | |
-                            | +-----------------+ |
-                            +---------------------+
 
-+-------------------------------------------------------------------------+
-|                            Configuration                                |
-+-------------------------------------------------------------------------+
+**emailReceiver** (email subscription management):
+
+```mermaid
+graph LR
+    classDef core    fill:#bbe5d5,stroke:#0F6E56,color:#085041
+    classDef store   fill:#cadbea,stroke:#185FA5,color:#0C447C
+    classDef external fill:#f1dfc0,stroke:#BA7517,color:#633806
+
+    IMAP{{IMAP}}:::external
+    Receiver[EmailReceiver]:::core
+    Queue[(EmailQueue)]:::store
+    Processor[EmailProcessor]:::core
+    Store[(SubscriberStore)]:::store
+
+    IMAP -->|raw emails| Receiver
+    Receiver -->|push| Queue
+    Queue -->|drain| Processor
+    Processor -->|subscribe/unsubscribe| Store
 ```
-
-| Area | Module | Responsibility |
-|---|---|---|
-| **Configuration** | `config` | Load from `config.yaml`; single source of truth |
-| **Input Channels** | `context_fetcher` | Fetch from RSS/sitemap sources, extract article text |
-| | `email_receiver` | Poll IMAP, push raw emails to queue |
-| **Processing** | `context_pool` | Store/retrieve fetched articles (JSON Lines per day) |
-| | `email_queue` | Persistent JSONL queue with namespacing |
-| | `email_processor` | Classify + dispatch incoming emails to actions |
-| | `subscriber_store` | Manage recipient list |
-| | `lesson.generator` | Prompt LLM with article context to produce a lesson |
-| | `lesson.llm` | Abstraction over local LLM providers |
-| | `lesson.formatter` | Render lesson into email HTML/text |
-| | `lesson.queue` | Queue ready-to-send formatted lessons |
-| **Output** | `email_sender` | SMTP dispatch to subscribers |
 
 ## Requirements
 
@@ -51,80 +65,176 @@ Modular pipeline with independent, replaceable modules:
 ## Setup
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
 
-# Configure
+# Configure from template
 cp daglas/config_default.yaml config.yaml
-# Edit config.yaml with your LLM endpoint, SMTP settings, etc.
-
-# Add subscribers
-echo "you@example.com" > subscribers.txt
+# Edit config.yaml with your LLM endpoint, SMTP settings, sources, etc.
 ```
 
 ## Usage
 
 ```bash
-# Run full pipeline (no email send)
+# Dry run — fetch context, print what would be sent, skip LLM call
 python run.py --dry-run
 
-# Generate a lesson from today's context
-python run.py --generate-only
-
-# Fetch context only
+# Fetch articles only
 python run.py --fetch-only
 
-# Full pipeline with send
+# Generate a lesson from already-fetched context
+python run.py --generate-only
+
+# Full pipeline (fetch + generate + queue)
+python run.py
+
+# Full pipeline with immediate send
 python run.py --send
 
 # With HTML output
 python run.py --html --send
+
+# Interval mode — run once and exit (for launchd / cron)
+python run.py --interval
+
+# Persistent mode — IMAP polling + sender queue daemon
+python run.py
 ```
 
-## Testing
+`run.py` runs in **persistent mode** by default (stays alive, polls IMAP,
+dispatches queued emails). Pass any explicit flag (`--dry-run`, `--fetch-only`,
+`--interval`, etc.) for one-shot mode.
+
+## launchd integration (macOS)
+
+Install to run automatically on schedule:
 
 ```bash
-pytest
-
-# Lint and format
-ruff check . && ruff format .
+python scripts/install_launchd.py
+python scripts/uninstall_launchd.py
 ```
+
+Two services:
+
+| Service | Mode | Behaviour |
+|---|---|---|
+| `com.daglas.lessonGenerator` | `StartInterval` 1800s | Fires `run.py --interval` every 30 min — generates and queues the daily lesson |
+| `com.daglas.runner` | `KeepAlive` + `RunAtLoad` | Keeps persistent mode alive (IMAP, sender queue), restarts on crash |
+
+launchd tracks wall time even across sleep/wake cycles, so the daily
+lesson fires at the correct time even if the Mac was asleep.
 
 ## Configuration
 
-All settings in `config.yaml`. Key options:
+All settings in `config.yaml` (copy from `daglas/config_default.yaml`).
+
+### Core
 
 | Key | Default | Description |
 |---|---|---|
 | `llm_endpoint` | `http://localhost:11434/v1` | LLM API endpoint |
 | `llm_model` | `gemma4:latest` | Model name |
-| `max_context_length` | `500` | Max tokens for article context |
-| `article_word_limit` | `100` | Word limit per article |
-| `lesson_level` | `beginner` | Target level |
-| `vocab_count` | `5` | Words per vocabulary list |
-| `sources` | `[{svt}]` | Content sources (name + sitemap URL) |
-| `smtp_host` | — | SMTP server for sending |
-| `imap_host` | — | IMAP server for receiving |
+| `llm_api_key` | `""` | API key if required |
+| `max_context_length` | `500` | Max characters for article context sent to LLM |
+| `article_word_limit` | `100` | Word limit per article displayed in lesson |
+| `lesson_level` | `beginner` | Target difficulty for generated lesson |
+| `vocab_count` | `5` | Vocabulary words per lesson |
+
+### Sources
+
+| Key | Default | Description |
+|---|---|---|
+| `sources` | `[]` | List of sources: `name`, `sitemap`, `max_age_hours` |
+
+Example:
+
+```yaml
+sources:
+  - name: svt
+    sitemap: https://www.svt.se/latest-articles-sitemap.xml
+    max_age_hours: 48
+```
+
+### Scheduling
+
+| Key | Default | Description |
+|---|---|---|
+| `fetch_time` | `06:00` | Time to fetch articles daily |
+| `send_time` | `07:00` | Time to send the lesson |
+| `context_fetcher_poll_interval` | `86400` | Daemon wake interval (seconds) for clock-skew safety |
+
+### Email (SMTP)
+
+| Key | Default | Description |
+|---|---|---|
+| `smtp_host` | `""` | SMTP server hostname |
+| `smtp_port` | `587` | SMTP port |
+| `smtp_user` | `""` | SMTP username |
+| `smtp_password` | `""` | SMTP password |
+| `from_address` | `""` | Sender email address |
+
+### Email (IMAP)
+
+| Key | Default | Description |
+|---|---|---|
+| `imap_host` | `""` | IMAP server hostname |
+| `imap_port` | `993` | IMAP port |
+| `imap_user` | `""` | IMAP username |
+| `imap_password` | `""` | IMAP password |
+| `email_receiver_poll_interval` | `300` | Seconds between IMAP polls |
+
+### Sender queue
+
+| Key | Default | Description |
+|---|---|---|
+| `email_sender_queue_immediate_interval` | `20` | Poll interval (s) for immediate queue |
+| `email_sender_queue_scheduled_interval` | `300` | Poll interval (s) for scheduled queue |
 
 ## Project structure
 
 ```
-daglas/              # Core modules
-├── config.py        # Config loading
-├── context_fetcher.py
-├── context_pool.py
-├── email_sender.py
-├── email_receiver.py
-├── email_queue.py
-├── email_processor.py
-├── subscriber_store.py
-└── lesson/          # Lesson generation
-    ├── generator.py
-    ├── formatter.py
-    └── llm.py
-prompts/             # LLM prompt templates
-tests/               # Tests mirrored to daglas/ structure
-tasks/               # Module design docs
-scripts/             # Integration verification scripts
-run.py               # CLI entry point
+daglas/
+├── config.py                 # Config loading from config.yaml
+├── config_default.yaml       # Template with commented defaults
+├── context_fetcher.py        # Sitemap parsing, article extraction, daemon
+├── context_pool.py           # JSONL store for fetched articles
+├── email_sender.py           # SMTP dispatch (internal, used by EmailSenderQueue)
+├── email_sender_queue.py     # Background queue with immediate + scheduled dispatch
+├── email_receiver.py         # IMAP polling, raw email push
+├── email_queue.py            # Persistent namespaced JSONL queue
+├── email_processor.py        # Blind notification hub for incoming emails
+├── subscriber_store.py       # Flat-file subscription management
+└── lesson/
+    ├── generator.py           # Prompt assembly, context truncation
+    ├── formatter.py           # Email dataclass, markdown→HTML
+    └── llm.py                 # Provider abstraction (ollama, mlx, llama.cpp)
+prompts/                       # Versioned LLM prompt templates
+scripts/
+├── install_launchd.py         # Generate & load launchd plists
+├── uninstall_launchd.py       # Unload & remove launchd plists
+├── config_verify.py           # Smoke-test config loading
+├── context_fetcher_verify.py  # Smoke-test article fetch
+├── email_receiver_verify.py   # Smoke-test IMAP connection
+└── subscriber_store_verify.py # Smoke-test subscribe flow
+tests/                         # Mirrors daglas/ structure
+tasks/                         # Module design docs (read before coding)
+data/                          # Runtime data (JSONL, subscribers)
+output/                        # Generated lesson files
+run.py                         # CLI entry point
 ```
+
+## Testing
+
+```bash
+pytest                           # all tests
+pytest tests/test_context_fetcher.py -v  # single module
+ruff check . && ruff format .    # lint and format
+```
+
+## Workflow conventions
+
+See `AGENTS.md` for full process rules. Key points:
+
+- **Task doc first** — read the module's spec in `tasks/` before writing code.
+- **No cloud dependencies** — prefer ollama, mlx, llama.cpp over API services.
+- **Secrets in `config.yaml`** only — never in source code.
+- **Local-first** — all processing happens on your machine.

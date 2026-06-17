@@ -8,36 +8,36 @@ No module imports another module's concrete classes except through their public 
 
 ## 2. Architecture
 
-Pipelines are color-coded by concern:
+Colour-coded by service:
 
-- **Inbound email pipeline** (purple) — receives and processes incoming emails
-- **Outbound lesson pipeline** (teal) — fetches context and generates lessons
-- **Email sender queue** (amber) — universal outbound dispatch with two poll loops
+- **emailReceiver** (purple) — polls IMAP, processes subscription emails
+- **lessonGenerator** (teal) — collects articles from the web, generates lessons via LLM, pushes into send queue
+- **emailSender** (amber) — dispatches queued emails on immediate and scheduled schedules
 - **Config** (blue) — shared by all
 
 ```mermaid
 graph LR
-    classDef inbound  fill:#d9c9e6,stroke:#5B3A8A,color:#3A1D5E
-    classDef outbound fill:#bbe5d5,stroke:#0F6E56,color:#085041
-    classDef send     fill:#f1dfc0,stroke:#BA7517,color:#633806
-    classDef cfg      fill:#cadbea,stroke:#185FA5,color:#0C447C
+    classDef receiver fill:#d9c9e6,stroke:#5B3A8A,color:#3A1D5E
+    classDef lesson  fill:#bbe5d5,stroke:#0F6E56,color:#085041
+    classDef sender  fill:#f1dfc0,stroke:#BA7517,color:#633806
+    classDef cfg     fill:#cadbea,stroke:#185FA5,color:#0C447C
 
     Config[DaglasConfig]:::cfg
 
-    Fetcher[ContextFetcher]:::outbound
-    Pool[ContextPool]:::outbound
-    Generator[LessonGenerator]:::outbound
-    LLM[LLMProvider]:::outbound
-    Formatter[Formatter]:::outbound
+    Fetcher[ContextFetcher]:::lesson
+    Pool[ContextPool]:::lesson
+    Generator[LessonGenerator]:::lesson
+    LLM[LLMProvider]:::lesson
+    Formatter[Formatter]:::lesson
 
-    SmtpServer((SMTP Server)):::send
-    SenderQ[EmailSenderQueue]:::send
-    Smtp[SmtpSender]:::send
+    SmtpServer((SMTP Server)):::sender
+    SenderQ[EmailSenderQueue]:::sender
+    Smtp[SmtpSender]:::sender
 
-    Subs[SubscriberStore]:::inbound
-    Queue[EmailQueue]:::inbound
-    Receiver[EmailReceiver]:::inbound
-    Processor[EmailProcessor]:::inbound
+    Subs[SubscriberStore]:::receiver
+    Queue[EmailQueue]:::receiver
+    Receiver[EmailReceiver]:::receiver
+    Processor[EmailProcessor]:::receiver
 
     Config --> Fetcher
     Config --> Generator
@@ -55,32 +55,45 @@ graph LR
     Processor -->|sender, subject, body| Subs
 ```
 
-### 2.1 Actor — who starts the pipelines
+### 2.1 Actors — who owns which lifecycle
+
+Two distinct launchd services control the daglas processes:
+
+| launchd service | Runs | Owner of |
+|---|---|---|
+| `com.daglas.lessonGenerator` | `python run.py --lesson_generator` | **lessonGenerator** — fetch, generate, queue, exit |
+| `com.daglas.runner` | `python run.py` (persistent) | **emailReceiver** + **emailSender** — stays alive |
 
 ```mermaid
 graph LR
     classDef actor  fill:#E1F5EE,stroke:#0F6E56,color:#085041
-    classDef pipe   fill:#cadbea,stroke:#185FA5,color:#0C447C
+    classDef svc    fill:#cadbea,stroke:#185FA5,color:#0C447C
 
-    Sys(("System")):::actor
+    LD(("launchd<br/>com.daglas.lessonGenerator")):::actor
+    Sys(("System<br/>run.py persistent")):::actor
 
-    Out["Outbound lesson pipeline<br/>fetch → generate → queue"]:::pipe
-    In["Inbound email pipeline<br/>IMAP poll → queue → process"]:::pipe
-    Send["Email sender pipeline<br/>immediate + scheduled dispatch"]:::pipe
+    LG["lessonGenerator<br/>collect → generate → push"]:::svc
+    ER["emailReceiver<br/>IMAP poll → queue → process"]:::svc
+    ES["emailSender<br/>dispatch queued mail"]:::svc
 
-    Sys -->|start| Out
-    Sys -->|start| In
-    Sys -->|start| Send
-    Sys -->|stop| Out
-    Sys -->|stop| In
-    Sys -->|stop| Send
+    LD -->|fires --lesson_generator| LG
+    LG -->|exits| LD
+
+    Sys -->|start| ER
+    Sys -->|start| ES
+    Sys -->|stop| ER
+    Sys -->|stop| ES
 ```
 
-The `System` actor represents the daglas process itself (started by `run.py`)
-which owns the lifecycle of all three pipelines — starting them at boot and
-stopping them on shutdown.
+`lessonGenerator` is not managed by the persistent process. It runs as a
+separate `--lesson` invocation, fired by launchd on a 30-minute schedule.
+The persistent `run.py` (System) only owns `emailReceiver` and `emailSender`
+— it starts them at boot and stops them on shutdown.
 
-### 2.3 Outbound pipeline
+### 2.3 lessonGenerator
+
+Collects articles from the web, generates a lesson via LLM, and queues it for
+sending.
 
 ```
 Config → ContextFetcher → ContextPool → LessonGenerator → LLM → Formatter
@@ -89,7 +102,10 @@ Config → ContextFetcher → ContextPool → LessonGenerator → LLM → Format
                                                               EmailSenderQueue
 ```
 
-### 2.4 Inbound pipeline
+### 2.4 emailReceiver
+
+Polls IMAP for incoming emails, processes subscription and unsubscribe
+requests, sends confirmation replies through the shared sender queue.
 
 ```
 Config → EmailReceiver → EmailQueue → EmailProcessor → SubscriberStore
@@ -98,27 +114,33 @@ Config → EmailReceiver → EmailQueue → EmailProcessor → SubscriberStore
                                                         EmailSenderQueue
 ```
 
-Both pipelines push to the same `EmailSenderQueue` instance. The queue
-dispatches on two schedules: immediate (20s poll) and scheduled (5min poll).
-`SmtpSender` is an internal transport — no module imports it directly.
+### 2.5 emailSender
+
+Dispatches queued emails on two schedules: immediate (every 20 s) and
+scheduled (every 5 min). `SmtpSender` is an internal transport — no module
+imports it directly.
+
+Both `lessonGenerator` and `emailReceiver` push to the same
+`EmailSenderQueue` instance. `emailSender` owns that queue and its dispatch
+threads.
 
 ## 3. Responsibilities
 
 - **Config loading**: call `load_config()` at startup and set `daglas.config.config`
 - **Module assembly**: instantiate all modules and pass dependencies
 - **Pipeline glue**: wire `EmailProcessor.add_listener(subscriber_store.handle_email)`
-- **Lifecycle**: start `EmailSenderQueue` and `EmailReceiver`, run outbound pipeline once, then enter a persistent main loop that keeps the process alive. On exit: stop `EmailReceiver`, stop `EmailSenderQueue`.
+- **Lifecycle**: start `emailSender` and `emailReceiver`, then enter a persistent main loop that keeps the process alive. On exit: stop `emailReceiver`, stop `emailSender`. `lessonGenerator` is not managed here — it runs as a separate `--lesson` process fired by launchd (see `tasks/macos_launchd.md`).
 - **Exit**: Ctrl+C or type `q` + Enter. No `--daemon` flag needed — persistent is the default.
-- **CLI interface**: argparse, phase selection (`--fetch-only`, `--generate-only`, `--send`, `--dry-run`, `--html`), `--one-shot` for CI/testing (exit after pipeline instead of persisting), `--max-articles` to limit fetch count
+- **CLI interface**: `--lesson_generator` to run the full lesson lifecycle (fetch → generate → queue) and exit
 
 Non-responsibilities: classification logic, subscription rules, handler functions, content inspection, SMTP dispatch.
 
 ## 4. Pipeline Wiring
 
-### 4.1 Shared EmailSenderQueue
+### 4.1 Shared emailSender
 
 A single `EmailSenderQueue` is instantiated once in `main()` and shared
-across all modules that need to send email:
+across `lessonGenerator` and `emailReceiver`:
 
 ```python
 from daglas.email_sender_queue import EmailSenderQueue
@@ -129,10 +151,10 @@ sender_queue.start()
 sender_queue.stop()
 ```
 
-### 4.2 Inbound wiring
+### 4.2 emailReceiver wiring
 
 ```python
-def _wire_inbound_pipeline(cfg, sender_queue):
+def _wire_email_receiver(cfg, sender_queue):
     from daglas.email_queue import EmailQueue
     from daglas.email_receiver import EmailReceiver
     from daglas.email_processor import EmailProcessor
@@ -155,7 +177,7 @@ def _wire_inbound_pipeline(cfg, sender_queue):
 
 No handler function. No classification logic. SubscriberStore provides its own `handle_email` method — it is a complete actor that knows how to interpret incoming emails. Confirmation emails are pushed to the shared `sender_queue` with `send_at="immediate"`.
 
-### 4.3 Outbound wiring
+### 4.3 lessonGenerator wiring
 
 Instantiate ContextPool, LLM provider, formatter. The generated lesson is
 pushed as a `SendRequest` to the shared `sender_queue` with
@@ -163,21 +185,20 @@ pushed as a `SendRequest` to the shared `sender_queue` with
 
 ### 4.4 Lifecycle — Persistent Loop
 
-By default `python3 run.py` stays alive until explicitly told to exit:
+The persistent `run.py` (managed by launchd `com.daglas.runner`) stays alive
+until explicitly told to exit. `lessonGenerator` is **not** part of this
+process — it runs as a separate `--lesson` invocation (see
+`tasks/macos_launchd.md`).
 
 ```
 ┌───────────── start ───────────────────────────────────────────┐
 │                                                                │
-│  sender_queue = EmailSenderQueue()                             │
-│  sender_queue.start()               ← daemon: 20s + 5min loops │
+│  email_sender = EmailSenderQueue()                             │
+│  email_sender.start()               ← daemon: 20s + 5min loops │
 │                                                                │
 │  if cfg.imap_host:                                             │
-│      receiver = _wire_inbound_pipeline(cfg, sender_queue)      │
+│      receiver = _wire_email_receiver(cfg, email_sender)        │
 │      receiver.start()                ← daemon: continuous IMAP │
-│                                                                │
-│  # --- outbound pipeline (runs once at startup) ---            │
-│  fetch_context() → generate_lesson() → format_email()          │
-│  sender_queue.push(SendRequest(send_at=cfg.send_time))         │
 │                                                                │
 │  # --- main loop (keeps main thread alive) ---                 │
 │  while not exit_requested:                                     │
@@ -191,14 +212,34 @@ By default `python3 run.py` stays alive until explicitly told to exit:
 │          exit_requested = True                                 │
 │                                                                │
 │  receiver.stop()                                               │
-│  sender_queue.stop()                                           │
+│  email_sender.stop()                                           │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 The main thread stays alive in the keyboard loop, keeping the daemon threads
 (`EmailReceiver` IMAP poll, `EmailSenderQueue` immediate/scheduled loops)
-alive. Inbound emails are processed reactively as they arrive. Queued
-emails are dispatched by the sender queue's polling loops.
+alive. Incoming subscription emails are processed reactively as they arrive.
+Queued lessons and confirmations are dispatched by `emailSender`'s polling
+loops.
+
+The `lessonGenerator` service runs in a separate `--lesson` process,
+fired by launchd (`com.daglas.lessonGenerator`) every 30 minutes:
+
+```
+┌─────── launchd fires python run.py --lesson ─────────────────┐
+│                                                                │
+│  fetch_context() → generate_lesson() → format_email()          │
+│  email_sender.push(SendRequest(send_at=cfg.send_time))         │
+│                                                                │
+│  sender_queue.start()   ← dispatch queued send                 │
+│  sender_queue.stop()                                           │
+│  exit                                                          │
+└────────────────────────────────────────────────────────────────┘
+```
+
+The two processes share the same data files (JSONL queue, context pool,
+subscriber store). The sender queue handles dedup if `--lesson` fires
+multiple times per day.
 
 **Exit methods:**
 
@@ -211,14 +252,11 @@ emails are dispatched by the sender queue's polling loops.
 ## 5. Use Cases
 
 | UC | Description |
-|---|---|
-| UC1 | **Full pipeline + persist** — outbound runs once, then stays alive for inbound + queue dispatch |
-| UC2 | **Inbound pipeline** — continuous IMAP polling → queue → processor → subscriber store |
-| UC3 | **Dry run** — generate without calling LLM |
-| UC4 | **Phase selection** — run only fetch, only generate, or only send |
-| UC5 | **HTML output** — also save HTML version of lesson |
-| UC6 | **Exit** — Ctrl+C or `q`+Enter stops receiver and queue, then exits |
-| UC7 | **One-shot** — `--one-shot` flag runs the selected pipeline and exits (for CI/testing, or manual scheduled dispatch via cron/launchd) |
+|---|---|---|
+| UC1 | **Persistent (emailReceiver + emailSender)** — `run.py` starts sender queue and IMAP poller, enters keyboard loop. Lesson generation is handled by `--lesson` (UC3). |
+| UC2 | **emailReceiver** — continuous IMAP polling → queue → processor → subscriber store |
+| UC3 | **lessonGenerator (--lesson)** — `run.py --lesson` runs fetch → generate → queue and exits. Fired by launchd `com.daglas.lessonGenerator` every 30 min. |
+| UC4 | **Exit** — Ctrl+C or `q`+Enter stops receiver and queue, then exits |
 
 ## 6. Interface
 
@@ -226,10 +264,10 @@ emails are dispatched by the sender queue's polling loops.
 
 ```python
 def main() -> None:
-    """Load config, parse args, run selected pipeline phases."""
+    """Load config, parse args, start services."""
 
 
-def _wire_inbound_pipeline(cfg) -> EmailReceiver:
+def _wire_email_receiver(cfg, sender_queue) -> EmailReceiver:
     """Create EmailQueue, EmailProcessor, EmailReceiver, SubscriberStore.
     Wire store.handle_email into the processor.
     Return the receiver so the caller can start/stop it.
@@ -242,21 +280,20 @@ No `_subscriber_handler` function. That logic belongs on `SubscriberStore`.
 
 run.py is intentionally thin — most logic lives in modules. Test via integration test patterns:
 
-- Verify that `_wire_inbound_pipeline` returns an `EmailReceiver` with a wired pipeline.
+- Verify that `_wire_email_receiver` returns an `EmailReceiver` with a wired pipeline.
 - Verify that starting the receiver and pushing an email to IMAP results in `SubscriberStore` being updated (end-to-end with real IMAP or integration mock).
 
 ## 8. Acceptance Criteria
 
-- `run.py --help` shows all flags.
-- `python run.py --dry-run` runs the outbound pipeline without calling the LLM.
-- `python run.py --fetch-only` runs only context fetch.
-- `_wire_inbound_pipeline(cfg)` wires `SubscriberStore.handle_email` directly to `EmailProcessor`.
+
+- `python run.py --help` shows all flags.
+- `_wire_email_receiver(cfg)` wires `SubscriberStore.handle_email` directly to `EmailProcessor`.
 - `run.py` contains no classification or subscription logic.
-- `python run.py` stays alive until Ctrl+C or `q`+Enter is pressed.
-- `EmailReceiver` polls IMAP continuously while the process lives.
-- `EmailSenderQueue` dispatches immediate and scheduled emails while the process lives.
-- Ctrl+C and `q`+Enter stop `EmailReceiver` and `EmailSenderQueue` before exit.
-- `--one-shot` runs the same pipeline but exits after queueing (no persistent loop).
+- `python run.py` (no flags) stays alive until Ctrl+C or `q`+Enter is pressed.
+- `python run.py --lesson_generator` runs lessonGenerator (fetch → generate → queue lesson) and exits.
+- `emailReceiver` polls IMAP continuously while the persistent process lives.
+- `emailSender` dispatches immediate and scheduled emails while the persistent process lives.
+- Ctrl+C and `q`+Enter stop `emailReceiver` and `emailSender` before exit.
 
 ## Discussion
 
@@ -270,10 +307,10 @@ run.py is intentionally thin — most logic lives in modules. Test via integrati
 
 **Impact on implementation plan:**
 - New module: `tasks/run.md` for the wiring doc.
-- `run.py` gains `_wire_inbound_pipeline()` and `_subscriber_handler()`.
+- `run.py` gains `_wire_email_receiver()` and `_subscriber_handler()`.
 
 **TODO actions:**
-- [x] Implement `_wire_inbound_pipeline()` in `run.py`.
+- [x] Implement `_wire_email_receiver()` in `run.py`.
 - [x] Implement `_subscriber_handler()` in `run.py`.
 - [x] Wire start/stop lifecycle in `main()`.
 
@@ -282,8 +319,8 @@ run.py is intentionally thin — most logic lives in modules. Test via integrati
 **What changed:**
 - Removed `_subscriber_handler` from the spec — `run.py` no longer defines classification logic.
 - SubscriberStore is a complete actor: it provides its own `handle_email(sender, subject, body)` method and registers directly with `EmailProcessor`.
-- `_wire_inbound_pipeline` now wires `processor.add_listener(store.handle_email)` instead of a local closure.
-- Architecture diagram color-coded: inbound pipeline (purple), outbound pipeline (teal), email sender (amber), config (blue).
+- `_wire_email_receiver` now wires `processor.add_listener(store.handle_email)` instead of a local closure.
+- Architecture diagram color-coded: emailReceiver (purple), lessonGenerator (teal), emailSender (amber), config (blue).
 - Simplified responsibilities: `run.py` does assembly and lifecycle only — no business logic.
 
 **Impact on implementation plan:**
@@ -299,9 +336,9 @@ run.py is intentionally thin — most logic lives in modules. Test via integrati
 
 **What changed:**
 - Architecture diagram updated: `EmailSenderQueue` sits between all producers and `SmtpSender`.
-- `_wire_inbound_pipeline` now takes `sender_queue` and passes it to `SubscriberStore`.
-- `main()` instantiates a single `EmailSenderQueue` shared by inbound and outbound pipelines.
-- Outbound pipeline pushes `SendRequest` with `send_at=cfg.send_time` to the queue instead of calling `SmtpSender.send()` directly.
+- `_wire_email_receiver` now takes `sender_queue` and passes it to `SubscriberStore`.
+- `main()` instantiates a single `EmailSenderQueue` shared by lessonGenerator and emailReceiver.
+- lessonGenerator pushes `SendRequest` with `send_at=cfg.send_time` to the queue instead of calling `SmtpSender.send()` directly.
 - `run.py` is responsible for `sender_queue.start()` / `sender_queue.stop()` lifecycle.
 
 **Impact on implementation plan:**
@@ -312,7 +349,7 @@ run.py is intentionally thin — most logic lives in modules. Test via integrati
 - [ ] Create `daglas/email_sender_queue.py`.
 - [ ] Update `run.py`:
   - Create `EmailSenderQueue` in `main()`.
-  - Pass to `_wire_inbound_pipeline`.
+  - Pass to `_wire_email_receiver`.
   - Push lesson as `SendRequest` with `send_at=cfg.send_time`.
   - Call `start()` / `stop()` on the queue.
 - [ ] Update `implementation_plan.md`.
@@ -320,15 +357,15 @@ run.py is intentionally thin — most logic lives in modules. Test via integrati
 ### 2026-06-14 — Persistent loop replaces one-shot lifecycle
 
 **What changed:**
-- Previous design: `run.py` called `receiver.check_once()` once, ran outbound pipeline, then exited. `EmailSenderQueue` daemon threads were killed when `main()` returned.
-- New design: `run.py` enters a persistent keyboard loop after running the outbound pipeline once. Ctrl+C or `q`+Enter exits cleanly.
+- Previous design: `run.py` called `receiver.check_once()` once, ran lessonGenerator, then exited. `EmailSenderQueue` daemon threads were killed when `main()` returned.
+- New design: `run.py` enters a persistent keyboard loop after running lessonGenerator once. Ctrl+C or `q`+Enter exits cleanly.
 - `EmailReceiver` now uses `start()` (daemon thread with continuous IMAP poll) instead of `check_once()`.
 - Main thread stays alive via the keyboard loop, keeping all daemon threads (`EmailReceiver` IMAP poll, `EmailSenderQueue` immediate/scheduled loops) alive.
 
 **Why:**
-- One-shot design could never process inbound emails that arrived after the single `check_once()` call.
+- One-shot design could never process subscription emails that arrived after the single `check_once()` call.
 - `EmailSenderQueue` immediate and scheduled dispatches never fired because daemon threads were killed on exit.
-- A persistent loop solves both: inbound IMAP polling continues, and queue dispatches happen organically.
+- A persistent loop solves both: emailReceiver IMAP polling continues, and queue dispatches happen organically.
 
 **Impact on implementation plan:**
 - `run.py` needs a main loop with keyboard input handling.
@@ -347,10 +384,9 @@ run.py is intentionally thin — most logic lives in modules. Test via integrati
 ### 2026-06-14 — Scheduler cancelled; ContextFetcher stays timer-free; --one-shot confirmed
 
 **What changed:**
-- Decision: No separate Scheduler module will be created. The three pipelines manage their own timing internally (EmailReceiver polls IMAP, EmailSenderQueue polls immediate/scheduled, outbound pipeline runs once at startup). The persistent main loop in `run.py` keeps the daemon threads alive.
+- Decision: No separate Scheduler module will be created. The three pipelines manage their own timing internally (EmailReceiver polls IMAP, EmailSenderQueue polls immediate/scheduled, lessonGenerator runs once at startup). The persistent main loop in `run.py` keeps the daemon threads alive.
 - Decision: ContextFetcher gets the same daemon pattern as EmailReceiver and EmailSenderQueue — `start()`/`stop()`/`_run()` with a daemon thread that sleeps until `fetch_time` and runs the fetch pipeline. This keeps the timing self-contained within the module rather than in `run.py`'s main loop.
-- `--one-shot` flag confirmed and promoted from TODO to spec. It preserves the original one-shot behavior for CI/testing and cron/launchd usage.
-- `--max-articles` flag added to limit fetch count.
+- `--one-shot` flag confirmed and promoted from TODO to spec.
 
 **Why no Scheduler:**
 - EmailReceiver already has its own daemon thread with configurable poll interval (`email_receiver_poll_interval`, default 300s).
@@ -370,22 +406,43 @@ run.py is intentionally thin — most logic lives in modules. Test via integrati
 - [x] Implement `run.py` changes:
   - Default behaviour: `_run_persistent()` starts all 3 daemons, enters keyboard loop, stops on exit.
   - `--one-shot` flag preserves original one-shot pipeline behaviour.
-  - Phase flags (`--fetch-only`, `--generate-only`, `--send`, `--dry-run`) always run in one-shot mode.
-  - `_run_persistent()` starts `sender_queue`, `receiver` (if imap_host configured), `OutboundPipeline`.
+  - Phase flags always run in one-shot mode.
+  - `_run_persistent()` starts `sender_queue`, `receiver` (if imap_host configured).
 - [x] Update `implementation_plan.md`: mark Scheduler cancelled, mark run.py done.
 
-### 2026-06-14 — OutboundPipeline daemon and persistent System actor implemented
+### 2026-06-14 — Pipeline daemon and persistent System actor implemented
 
 **What changed:**
-- Created `daglas/pipeline.py` with `OutboundPipeline` class — daemon thread wrapping fetch → generate → format → queue, matching the `start()`/`stop()`/`is_running`/`_run()` pattern.
-- Refactored `run.py` into two entry points: `_run_one_shot(args)` (preserves the original behaviour for `--one-shot` and phase flags) and `_run_persistent()` (default — starts all 3 daemon pipelines, enters keyboard loop, shuts down cleanly).
+- Created `daglas/pipeline.py` with pipeline daemon class wrapping fetch → generate → format → queue, matching the `start()`/`stop()`/`is_running`/`_run()` pattern.
+- Refactored `run.py` into two entry points: `_run_one_shot(args)` (preserves the original behaviour for `--one-shot`) and `_run_persistent()` (default — starts all 3 daemon pipelines, enters keyboard loop, shuts down cleanly).
 - Added `--one-shot` flag to argparse.
-- `run.py` is now the `System` actor from the architecture diagram — it owns start/stop for all three pipelines.
 
 **Impact on implementation plan:**
 - `run.py` status: `designing` → `done`.
-- `OutboundPipeline` added as new module (`daglas/pipeline.py`, `tasks/pipeline.md`).
 - `ContextFetcher` status: `designing` → `done`.
 
 **TODO actions:**
-- [ ] Add daemon lifecycle tests for `ContextFetcherDaemon` and `OutboundPipeline`.
+- [x] Add daemon lifecycle tests for `ContextFetcherDaemon`.
+
+### 2026-06-17 — Renamed services; clarified launchd split
+
+**What changed:**
+- Replaced old pipeline names with service names: lessonGenerator, emailReceiver, emailSender.
+- Actor diagram split into two actors: **launchd** (fires `--lesson` for lessonGenerator) and **System** (persistent `run.py` for emailReceiver + emailSender).
+- Removed lessonGenerator from persistent lifecycle — it is not managed by the persistent `run.py`. It runs as a separate `--lesson` process fired by launchd every 30 minutes.
+- Added lifecycle diagram for `--lesson` mode in section 4.4.
+- Updated responsibilities, use cases, and acceptance criteria to reflect the split.
+- `_wire_inbound_pipeline` → `_wire_email_receiver`.
+- `--one-shot` → `--lesson`.
+
+**Why:**
+- launchd handles wall-time scheduling; persistent mode should only manage fast-polling services (IMAP, sender queue).
+- lessonGenerator runs on a 30-minute launchd timer (`com.daglas.lessonGenerator`), avoiding Python monotonic clock drift across sleep/wake cycles.
+
+**Impact on implementation plan:**
+- The actor diagram now shows the real architecture: two processes, three services.
+
+**TODO actions:**
+- [x] Rename wiring function to `_wire_email_receiver` in `run.py`.
+- [x] Rename `--one-shot` → `--lesson` in `run.py`.
+- [x] Update `implementation_plan.md` with service naming.

@@ -33,21 +33,23 @@ graph LR
 ## 3. Pipeline
 
 ```
-Discover → Crawl → Extract → Deduplicate → Store
+Parse sitemap → Filter by age → Crawl → Extract → Deduplicate → Store
 ```
 
 | Stage | What it does |
 |---|---|
-| **Discover** | Resolve configured source entries into lists of article URLs (parse sitemaps, discover API endpoints) |
-| **Crawl** | HTTP-fetch each discovered article page |
+| **Parse sitemap** | Fetch the configured flat sitemap URL, extract each `<url>` entry: `<loc>` (required), best-available date (try `<news:publication_date>` → `<lastmod>` → `None`), and title if present |
+| **Filter by age** | Drop entries whose date is older than `max_age_hours` |
+| **Crawl** | HTTP-fetch each remaining article page |
 | **Extract** | Parse HTML into structured fields: title, body, dates, author, metadata |
 | **Deduplicate** | Skip already-seen URLs (across the current run, and vs. previously stored) |
 | **Store** | Write deduplicated articles as structured data to `ContextPool` |
 
 ## 3. Scope (MVP)
 
-- **Content channels**: sitemap-based article discovery (parse `sitemap.xml` / `sitemap_index.xml` for `news:news` entries and general URLs).
+- **Content channels**: flat sitemap parsing (config must point to a `<urlset>` sitemap, not a `<sitemapindex>`).
 - **Extraction**: full-article content, title, publish date, author, language.
+- **Age-based filtering**: configurable `max_age_hours` per source skips stale entries before HTTP fetch.
 - **Deduplication**: by URL within a single run.
 - **Error handling**: one failing source does not block others; per-article timeout.
 - **Output**: structured `Article` objects serialized as JSON Lines to `ContextPool`.
@@ -93,13 +95,26 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class SitemapEntry:
+    """One article discovered from a flat sitemap before its HTML is fetched.
+
+    Carries metadata from the sitemap XML (<news:news> or <lastmod>) so the
+    pipeline can filter by age and sort by recency without downloading the
+    article page.
+    """
+    url: str
+    publish_date: str | None = None
+    title: str = ""
+
+
+@dataclass
 class Article:
+    publish_date: str | None = None
     url: str = ""
     title: str = ""
     body: str = ""
-    publish_date: str | None = None
-    updated_date: str | None = None
     source: str = ""
+    updated_date: str | None = None
     category: str | None = None
     tags: list[str] = field(default_factory=list)
     author: str | None = None
@@ -112,37 +127,45 @@ class FetchResult:
     errors: list[str] = field(default_factory=list)
 
 
-def discover_sitemap_urls(sitemap_url: str, client: httpx.Client) -> set[str]:
-    """Fetch a sitemap and return all discovered article URLs.
+def read_sitemap_entries(sitemap_url: str, client: httpx.Client) -> list[SitemapEntry]:
+    """Fetch a flat sitemap and return structured entries.
 
-    Handles sitemap indexes (nested sitemaps) and standard sitemaps.
-    Filters to plausible article paths (heuristically).
+    Extracts <loc>, the best available date
+    (<news:publication_date> > <lastmod>), and title
+    (<news:title>) from each <url> entry.
+
+    Raises ValueError if the response is a sitemap index
+    (<sitemapindex>) — config must point to a flat sitemap.
     """
     ...
 
 
 def extract_article(url: str, html: str) -> Article:
-    """Parse article HTML into a structured Article object using trafilatura."""
+    """Parse article HTML into a structured Article object."""
     ...
 
 
 def fetch_context(
-    sitemap_urls: list[str],
+    source_configs: list[dict],
     pool: ContextPool,
     *,
-    concurrency: int = 5,
     user_agent: str = "daglas/1.0",
+    max_articles: int = 0,
+    max_age_hours: int = 0,
 ) -> FetchResult:
-    """Full pipeline: discover → crawl → extract → deduplicate → store.
+    """Full pipeline: parse sitemap → filter by age → crawl → extract → deduplicate → store.
 
     Parameters
     ----------
-    sitemap_urls:
-        List of sitemap URLs to discover articles from.
+    source_configs:
+        List of source config dicts with 'sitemap' (flat URL) and
+        optional 'max_age_hours'.
     pool:
         ContextPool instance to store results into.
-    concurrency:
-        Number of parallel article fetches (default 5).
+    max_articles:
+        Maximum number of articles to fetch (0 = unlimited).
+    max_age_hours:
+        Skip entries older than this many hours (0 = no filter).
     """
     ...
 
@@ -157,12 +180,12 @@ def deduplicate(articles: list[Article]) -> list[Article]:
 ```python
 @dataclass
 class Article:
+    publish_date: str | None
     url: str
     title: str
     body: str
-    publish_date: str | None
-    updated_date: str | None
     source: str
+    updated_date: str | None
     category: str | None
     tags: list[str]
     author: str | None
@@ -179,12 +202,12 @@ class ContextPool:
 ```yaml
 sources:
   - name: svt
-    sitemap: https://www.svt.se/sitemap.xml
-  - name: dn
-    sitemap: https://www.dn.se/sitemap.xml
+    sitemap: https://www.svt.se/latest-articles-sitemap.xml
+    max_age_hours: 48
 ```
 
-For MVP, the `load_config` function reads these into lists. The `DaglasConfig` dataclass will need a new field for structured sources.
+The `sitemap` URL must point to a flat `<urlset>` sitemap, not a `<sitemapindex>`.
+`max_age_hours` is optional (default 0 = no filter).
 
 ### Daemon class
 
@@ -273,13 +296,16 @@ again creates a new thread and transitions back to `Waiting`.
 
 Create `daglas/context_fetcher.py` with `Article`, `FetchResult`, and stubs for `discover_sitemap_urls`, `extract_article`, `deduplicate`, `fetch_context`.
 
-### Step 2 — Sitemap discovery
+### Step 2 — Sitemap parsing
 
 1. Fetch `sitemap_url` with `httpx`.
-2. Parse XML with BeautifulSoup (`lxml-xml` parser).
-3. If it's a sitemap index (<sitemapindex>), recursively fetch each child sitemap.
-4. For standard sitemaps, extract all <loc> entries.
-5. Return deduplicated set of discovered article URLs.
+2. Parse XML.
+3. Detect if response is a sitemap index (`<sitemapindex>`) → raise `ValueError` (config should point to a flat sitemap; use the discovery tool if unsure).
+4. For flat sitemaps, iterate each `<url>` entry:
+   - Extract `<loc>` (required).
+   - Extract date: try `<news:publication_date>` (namespace-aware), fall back to `<lastmod>`, else `None`.
+   - Extract title from `<news:title>` if present.
+5. Return `list[SitemapEntry]`.
 
 ### Step 3 — Article extraction
 
@@ -307,33 +333,55 @@ Create `daglas/context_fetcher.py` with `Article`, `FetchResult`, and stubs for 
 `fetch_context` orchestrates the stages:
 
 ```python
-def fetch_context(sitemap_urls, pool, ...):
+def fetch_context(source_configs, pool, *, max_articles=0, max_age_hours=0):
     seen: set[str] = set()
     articles: list[Article] = []
     errors: list[str] = []
 
-    for sitemap_url in sitemap_urls:
-        try:
-            urls = discover_sitemap_urls(sitemap_url, client)
-        except Exception as e:
-            errors.append(f"{sitemap_url}: discovery failed: {e}")
-            continue
-
-        for url in urls:
-            if url in seen:
-                continue
-            seen.add(url)
+    with httpx.Client(...) as client:
+        for source in source_configs:
             try:
-                response = client.get(url, ...)
-                article = extract_article(url, response.text)
-                articles.append(article)
+                entries = read_sitemap_entries(source["sitemap"], client)
             except Exception as e:
-                errors.append(f"{url}: {e}")
+                errors.append(f"{source['sitemap']}: parse failed: {e}")
+                continue
 
-    if articles:
-        pool.store_articles(articles)
+            # Age filter
+            source_max_age = source.get("max_age_hours", 0) or max_age_hours
+            if source_max_age > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=source_max_age)
+                entries = [e for e in entries
+                          if e.publish_date is None
+                          or _parse_date(e.publish_date) >= cutoff]
 
-    return FetchResult(articles=articles, errors=errors)
+            # Newest first
+            entries.sort(key=_entry_sort_key, reverse=True)
+
+            for entry in entries:
+                if entry.url in seen:
+                    continue
+                seen.add(entry.url)
+                if max_articles and len(articles) >= max_articles:
+                    break
+                try:
+                    resp = client.get(entry.url, timeout=30)
+                    resp.raise_for_status()
+                    article = extract_article(entry.url, resp.text)
+                    if not article.title and entry.title:
+                        article.title = entry.title
+                    articles.append(article)
+                except Exception as e:
+                    errors.append(f"{entry.url}: {e}")
+            if max_articles and len(articles) >= max_articles:
+                break
+
+    articles.sort(key=lambda a: a.publish_date or "", reverse=True)
+    deduped = deduplicate(articles)
+
+    if deduped:
+        pool.store_articles([a.__dict__ for a in deduped])
+
+    return FetchResult(articles=deduped, errors=errors)
 ```
 
 ### Step 6 — Config integration
@@ -363,20 +411,23 @@ Use `pytest`. No network — mock `httpx` responses with fixture HTML/XML. Use `
 Coverage categories: happy path, error path, edge cases, critical business logic.
 
 | Category | Test | What it covers |
-|---|---|---|
-| Happy path | `test_discover_sitemap_flat` | Single sitemap → returns all `<loc>` URLs |
-| Happy path | `test_discover_sitemap_index` | Sitemap index → recursively fetches child sitemaps |
+|---|---|---|---|
+| Happy path | `test_read_sitemap_entries_news_metadata` | Flat sitemap with `<news:news>` → returns `SitemapEntry` with dates and titles |
+| Happy path | `test_read_sitemap_entries_plain` | Flat sitemap without news namespace → entries with dates from `<lastmod>`, titles empty |
 | Happy path | `test_extract_article` | Article HTML → populated `Article` |
-| Happy path | `test_fetch_context_single_sitemap` | One sitemap → articles discovered, extracted, stored |
+| Happy path | `test_fetch_context_single_sitemap` | One sitemap → articles discovered, filtered, extracted, stored |
+| Error path | `test_read_sitemap_entries_index_raises` | Sitemap index → raises `ValueError` |
 | Error path | `test_fetch_context_sitemap_unreachable` | Sitemap fetch fails → error recorded, no articles |
 | Error path | `test_fetch_context_article_failure` | One article fails → others still processed and stored |
 | Error path | `test_fetch_context_all_fail` | All sitemaps fail → no articles stored |
-| Edge case | `test_discover_sitemap_empty` | Sitemap with no entries → empty set |
+| Edge case | `test_read_sitemap_entries_empty` | Sitemap with no entries → empty list |
 | Edge case | `test_extract_article_fallback` | No clear article → fallback extraction |
 | Edge case | `test_extract_article_empty_body` | Empty/short HTML → empty-styled Article |
-| Edge case | `test_fetch_context_no_sources` | Empty sitemap list → no-op |
+| Edge case | `test_fetch_context_no_sources` | Empty source list → no-op |
 | Critical logic | `test_deduplicate` | Duplicate URLs → only first occurrence kept |
 | Critical logic | `test_fetch_context_deduplicates_across_sitemaps` | Same URL in two sitemaps → stored once |
+| Critical logic | `test_fetch_context_skips_old_articles` | Entries older than `max_age_hours` are not fetched |
+| Critical logic | `test_fetch_context_sorts_by_date` | Newest articles fetched and stored first |
 | Daemon | `test_daemon_start_stop` | `start()` then `stop()` → thread exits cleanly |
 | Daemon | `test_daemon_fetch_once` | `fetch_once()` returns `FetchResult` with articles |
 | Daemon | `test_daemon_skip_if_no_sources` | Daemon starts but no sources configured → no-op |
@@ -388,8 +439,28 @@ Coverage categories: happy path, error path, edge cases, critical business logic
 - `ruff check daglas/` and `ruff format --check daglas/` pass.
 - Running `python3 -m daglas.context_fetcher --dry-run` with a configured sitemap URL prints discovered articles (manual smoke test).
 - `ContextFetcherDaemon.start()` / `stop()` lifecycle works (tested via integration script or unit tests).
+- Sitemap discovery tool (separate script) can identify the correct flat sitemap URL for a new source.
 
 ## Discussion
+
+### 2026-06-16 — Flat sitemap only; metadata-aware parsing; age filtering
+
+**What changed:**
+- Replaced `discover_sitemap_urls` with `read_sitemap_entries` — no sitemap index recursion, only flat `<urlset>` parsing. Raises `ValueError` on index input.
+- Added `SitemapEntry` dataclass returning `(url, publish_date, title)` from `<news:news>` / `<lastmod>` metadata.
+- Added `max_age_hours` filter to skip stale entries before HTML fetch.
+- Reordered `Article` fields so `publish_date` comes first.
+- Sitemap discovery separated into a future AI-assisted tool; the fetcher assumes the sitemap URL is pre-configured.
+- Pipeline stages now: Parse sitemap → Filter by age → Crawl → Extract → Deduplicate → Store.
+
+**Why:**
+- The general sitemap index includes video and other non-article sitemaps.
+- Without date metadata in discovery, we can't filter old entries without fetching their HTML.
+- Namespace-agnostic: works with `<news:news>`, other custom namespaces, or no metadata.
+- Swedish language requirement is implicit in source selection, not tag inspection.
+- Manual flat-sitemap config is more reliable than auto-discovery; the discovery tool is a convenience for adding new sources.
+
+### 2026-06-14 — Added daemon lifecycle (start/stop/run)
 
 ### 2026-06-14 — Added daemon lifecycle (start/stop/run)
 
@@ -413,6 +484,6 @@ Coverage categories: happy path, error path, edge cases, critical business logic
 **TODO actions:**
 - [x] Add `context_fetcher_poll_interval` field to `DaglasConfig` (default 86400).
 - [x] Implement `ContextFetcherDaemon` in `daglas/context_fetcher.py`.
-- [ ] Add `tests/test_context_fetcher.py` tests for daemon lifecycle.
+- [x] Add `tests/test_context_fetcher.py` tests for daemon lifecycle.
 - [x] Update `run.py` — `OutboundPipeline` uses `ContextFetcherDaemon.fetch_once()` internally.
 - [x] Update `implementation_plan.md`.

@@ -3,7 +3,7 @@
 ## 1. Purpose
 
 Low-level SMTP transport used exclusively by `EmailSenderQueue`. No module
-should import `SmtpSender` directly — all outbound email dispatch goes
+should import `SmtpSender` directly — all email dispatch goes
 through `EmailSenderQueue.push()`.
 
 ## 2. Component Diagram

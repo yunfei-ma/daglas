@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import trafilatura
@@ -13,13 +14,20 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class SitemapEntry:
+    url: str
+    publish_date: str | None = None
+    title: str = ""
+
+
+@dataclass
 class Article:
+    publish_date: str | None = None
     url: str = ""
     title: str = ""
     body: str = ""
-    publish_date: str | None = None
-    updated_date: str | None = None
     source: str = ""
+    updated_date: str | None = None
     category: str | None = None
     tags: list[str] = field(default_factory=list)
     author: str | None = None
@@ -32,24 +40,44 @@ class FetchResult:
     errors: list[str] = field(default_factory=list)
 
 
-def discover_sitemap_urls(sitemap_url: str, client: httpx.Client) -> set[str]:
+def read_sitemap_entries(sitemap_url: str, client: httpx.Client) -> list[SitemapEntry]:
     resp = client.get(sitemap_url, timeout=30)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "xml")
-    urls: set[str] = set()
 
     if soup.find("sitemapindex"):
-        for sitemap_tag in soup.find_all("sitemap"):
-            loc = sitemap_tag.find("loc")
-            if loc and loc.text:
-                urls.update(discover_sitemap_urls(loc.text.strip(), client))
-    else:
-        for url_tag in soup.find_all("url"):
-            loc = url_tag.find("loc")
-            if loc and loc.text:
-                urls.add(loc.text.strip())
+        raise ValueError(
+            f"{sitemap_url} is a sitemap index, not a flat urlset — "
+            "configure a flat sitemap URL directly"
+        )
 
-    return urls
+    entries: list[SitemapEntry] = []
+    for url_tag in soup.find_all("url"):
+        loc = url_tag.find("loc")
+        if not loc or not loc.text:
+            continue
+
+        url = loc.text.strip()
+        publish_date: str | None = None
+        title = ""
+
+        news = url_tag.find("news:news")
+        if news:
+            pub_date_tag = news.find("news:publication_date")
+            if pub_date_tag and pub_date_tag.text:
+                publish_date = pub_date_tag.text.strip()
+            title_tag = news.find("news:title")
+            if title_tag and title_tag.text:
+                title = title_tag.text.strip()
+
+        if publish_date is None:
+            lastmod = url_tag.find("lastmod")
+            if lastmod and lastmod.text:
+                publish_date = lastmod.text.strip()
+
+        entries.append(SitemapEntry(url=url, publish_date=publish_date, title=title))
+
+    return entries
 
 
 def extract_article(url: str, html: str) -> Article:
@@ -106,12 +134,29 @@ def deduplicate(articles: list[Article]) -> list[Article]:
     return result
 
 
+def _parse_date(date_str: str) -> datetime:
+    naive = datetime.fromisoformat(date_str)
+    if naive.tzinfo is None:
+        return naive.replace(tzinfo=timezone.utc)
+    return naive
+
+
+def _entry_sort_key(entry: SitemapEntry) -> datetime:
+    if entry.publish_date:
+        try:
+            return _parse_date(entry.publish_date)
+        except (ValueError, TypeError):
+            return datetime.min.replace(tzinfo=timezone.utc)
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
 def fetch_context(
     source_configs: list[dict],
     pool,
     *,
     user_agent: str = "daglas/1.0",
     max_articles: int = 0,
+    max_age_hours: int = 0,
 ) -> FetchResult:
     seen: set[str] = set()
     articles: list[Article] = []
@@ -123,28 +168,42 @@ def fetch_context(
             if not sitemap_url:
                 continue
             try:
-                urls = discover_sitemap_urls(sitemap_url, client)
+                entries = read_sitemap_entries(sitemap_url, client)
             except Exception as e:
-                errors.append(f"{sitemap_url}: discovery failed: {e}")
+                errors.append(f"{sitemap_url}: parse failed: {e}")
                 continue
 
-            for url in urls:
-                if url in seen:
+            source_max_age = source.get("max_age_hours", 0) or max_age_hours
+            if source_max_age > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=source_max_age)
+                entries = [
+                    e
+                    for e in entries
+                    if e.publish_date is None or _parse_date(e.publish_date) >= cutoff
+                ]
+
+            entries.sort(key=_entry_sort_key, reverse=True)
+
+            for entry in entries:
+                if entry.url in seen:
                     continue
-                seen.add(url)
+                seen.add(entry.url)
                 if max_articles and len(articles) >= max_articles:
                     break
                 try:
-                    resp = client.get(url, timeout=30)
+                    resp = client.get(entry.url, timeout=30)
                     resp.raise_for_status()
-                    article = extract_article(url, resp.text)
-                    article.source = source.get("name", _domain_from_url(url))
+                    article = extract_article(entry.url, resp.text)
+                    if not article.title and entry.title:
+                        article.title = entry.title
+                    article.source = source.get("name", _domain_from_url(entry.url))
                     articles.append(article)
                 except Exception as e:
-                    errors.append(f"{url}: {e}")
+                    errors.append(f"{entry.url}: {e}")
             if max_articles and len(articles) >= max_articles:
                 break
 
+    articles.sort(key=lambda a: a.publish_date or "", reverse=True)
     deduped = deduplicate(articles)
 
     if deduped:
@@ -209,11 +268,29 @@ class ContextFetcherDaemon:
             max_articles=self._max_articles,
         )
 
+    def _seconds_until_fetch_time(self) -> float:
+        hour, minute = self._fetch_time.split(":")
+        now = datetime.now(timezone.utc)
+        fetch_dt = now.replace(
+            hour=int(hour), minute=int(minute), second=0, microsecond=0
+        )
+        if fetch_dt <= now:
+            fetch_dt += timedelta(days=1)
+        return (fetch_dt - now).total_seconds()
+
     def _run(self) -> None:
         while not self._stop_event.is_set():
+            wait = self._seconds_until_fetch_time()
+            while wait > 0 and not self._stop_event.is_set():
+                sleep = min(wait, float(self._poll_interval))
+                self._stop_event.wait(timeout=sleep)
+                wait -= sleep
+
+            if self._stop_event.is_set():
+                break
+
             result = self.fetch_once()
             if result.articles:
                 logger.info("Fetched %d article(s)", len(result.articles))
             for err in result.errors:
                 logger.warning("Fetch error: %s", err)
-            self._stop_event.wait(timeout=self._poll_interval)

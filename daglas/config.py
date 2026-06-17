@@ -15,6 +15,7 @@ USER_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 class SourceConfig:
     name: str = ""
     sitemap: str = ""
+    max_age_hours: int = 0
 
 
 @dataclass
@@ -41,7 +42,7 @@ class DaglasConfig:
     from_address: str = ""
     to_addresses: list[str] = field(default_factory=list)
 
-    # --- IMAP (inbound subscription requests) ---
+    # --- IMAP (email subscription requests from readers) ---
     imap_host: str = ""
     imap_port: int = 993
     imap_user: str = ""

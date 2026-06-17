@@ -13,10 +13,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RUN_PY = PROJECT_ROOT / "run.py"
 PYTHON_BIN = Path(sys.executable).resolve()
 
-OUTBOUND_LABEL = "com.daglas.outbound"
+LESSON_GENERATOR_LABEL = "com.daglas.lessonGenerator"
 RUNNER_LABEL = "com.daglas.runner"
 
-OUTBOUND_PLIST = LAUNCH_AGENTS_DIR / f"{OUTBOUND_LABEL}.plist"
+LESSON_GENERATOR_PLIST = LAUNCH_AGENTS_DIR / f"{LESSON_GENERATOR_LABEL}.plist"
 RUNNER_PLIST = LAUNCH_AGENTS_DIR / f"{RUNNER_LABEL}.plist"
 
 logger = logging.getLogger("install_launchd")
@@ -33,14 +33,14 @@ def _ensure_dirs() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _build_outbound_plist() -> dict:
+def _build_lesson_generator_plist() -> dict:
     return {
-        "Label": OUTBOUND_LABEL,
+        "Label": LESSON_GENERATOR_LABEL,
         "ProgramArguments": [str(PYTHON_BIN), str(RUN_PY), "--interval"],
         "StartInterval": 1800,
         "WorkingDirectory": str(PROJECT_ROOT),
-        "StandardOutPath": str(LOG_DIR / "outbound.log"),
-        "StandardErrorPath": str(LOG_DIR / "outbound.err"),
+        "StandardOutPath": str(LOG_DIR / "lesson_generator.log"),
+        "StandardErrorPath": str(LOG_DIR / "lesson_generator.err"),
         "EnvironmentVariables": {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
     }
 
@@ -89,21 +89,21 @@ def install() -> None:
     _check_macos()
     _ensure_dirs()
 
-    outbound = _build_outbound_plist()
+    lesson_generator = _build_lesson_generator_plist()
     runner = _build_runner_plist()
 
-    _write_plist(OUTBOUND_PLIST, outbound)
+    _write_plist(LESSON_GENERATOR_PLIST, lesson_generator)
     _write_plist(RUNNER_PLIST, runner)
 
-    _unload_if_exists(OUTBOUND_PLIST)
+    _unload_if_exists(LESSON_GENERATOR_PLIST)
     _unload_if_exists(RUNNER_PLIST)
 
-    _load_plist(OUTBOUND_PLIST)
+    _load_plist(LESSON_GENERATOR_PLIST)
     _load_plist(RUNNER_PLIST)
 
     print("Installed:")
-    print(f"  {OUTBOUND_LABEL}  — fires every 30 min")
-    print(f"  {RUNNER_LABEL}    — persistent (KeepAlive + RunAtLoad)")
+    print(f"  {LESSON_GENERATOR_LABEL}  — fires every 30 min")
+    print(f"  {RUNNER_LABEL}              — persistent (KeepAlive + RunAtLoad)")
     print(f"Logs: {LOG_DIR}")
 
 

@@ -5,7 +5,7 @@
 Manage the list of email recipients who receive the daily Swedish lesson,
 archive user-submitted notes, and send immediate confirmation emails when
 users subscribe or unsubscribe via email. Acts as a complete actor in the
-inbound email pipeline.
+emailReceiver pipeline.
 
 ## 2. Component Diagram
 
@@ -34,7 +34,7 @@ graph LR
 - **Storage**: flat text file, one email address per line
 - **Location**: configurable path, defaults to `data/subscribers.txt`
 - **API**: list all, add one, remove one — deduplicated, idempotent
-- **Email handling**: `handle_email(sender, subject, body)` classifies and delegates to add/remove — makes SubscriberStore a complete actor for the inbound pipeline
+- **Email handling**: `handle_email(sender, subject, body)` classifies and delegates to add/remove — makes SubscriberStore a complete actor for the emailReceiver pipeline
 - **User notes**: single per-user text file (`data/notes/<sanitized_email>.txt`) — `@` → `_`, `.` → `_` to avoid collisions (e.g. `alice@gmail.com` → `alice_gmail_com.txt`); each incoming email body is appended with a date-stamped header; this is the sole file recording all user information and requests
 - **Confirmation emails**: immediate welcome/goodbye reply pushed to `EmailSenderQueue` when a user subscribes or unsubscribes
 - **Templates**: built-in welcome and unsubscribe templates, configurable via constructor

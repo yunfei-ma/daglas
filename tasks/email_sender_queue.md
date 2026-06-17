@@ -1,8 +1,8 @@
-# EmailSenderQueue — Universal Outbound Email Dispatch
+# EmailSenderQueue — Universal Email Dispatch
 
 ## 1. Purpose
 
-Unified outbound email interface for all modules. Any module that needs to
+Unified email dispatch interface for all modules. Any module that needs to
 send an email — lesson dispatch, subscriber confirmations, future error
 reports — pushes a request to the EmailSenderQueue instead of calling SMTP
 directly. The queue dispatches on two schedules: immediate (20s poll) and

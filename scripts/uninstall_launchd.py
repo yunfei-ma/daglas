@@ -7,10 +7,10 @@ from pathlib import Path
 
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 
-OUTBOUND_LABEL = "com.daglas.outbound"
+LESSON_GENERATOR_LABEL = "com.daglas.lessonGenerator"
 RUNNER_LABEL = "com.daglas.runner"
 
-OUTBOUND_PLIST = LAUNCH_AGENTS_DIR / f"{OUTBOUND_LABEL}.plist"
+LESSON_GENERATOR_PLIST = LAUNCH_AGENTS_DIR / f"{LESSON_GENERATOR_LABEL}.plist"
 RUNNER_PLIST = LAUNCH_AGENTS_DIR / f"{RUNNER_LABEL}.plist"
 
 logger = logging.getLogger("uninstall_launchd")
@@ -45,11 +45,11 @@ def _remove(path: Path) -> None:
 def uninstall() -> None:
     _check_macos()
 
-    for path in (OUTBOUND_PLIST, RUNNER_PLIST):
+    for path in (LESSON_GENERATOR_PLIST, RUNNER_PLIST):
         _unload(path)
         _remove(path)
 
-    print("Uninstalled: com.daglas.outbound, com.daglas.runner")
+    print("Uninstalled: com.daglas.lessonGenerator, com.daglas.runner")
 
 
 if __name__ == "__main__":

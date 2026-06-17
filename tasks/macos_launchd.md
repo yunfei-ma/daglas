@@ -4,13 +4,13 @@
 
 Use macOS `launchd` for two distinct responsibilities:
 
-- **Outbound pipeline scheduling** — fire `run.py --interval` every 30 minutes
-  via `StartInterval`. The pipeline checks wall time against config
-  (`fetch_time`, `send_time`) to decide whether to generate. Max 30-minute
-  delay after the configured time, regardless of sleep/wake cycles.
-- **Persistent process supervision** — keep `run.py` alive for inbound email
-  polling and email sender dispatch (fast timers, small monotonic drift
-  is acceptable).
+- **lessonGenerator scheduling** — fire `run.py --lesson_generator` every 30 minutes
+  via `StartInterval`. The process fetches articles, generates a lesson via
+  LLM, and queues it for sending. Max 30-minute delay after the configured
+  time, regardless of sleep/wake cycles.
+- **Persistent process supervision** — keep `run.py` alive for `emailReceiver`
+  (IMAP polling) and `emailSender` (queue dispatch). These use fast timers
+  where small monotonic drift is acceptable.
 
 Both share the same data files (JSONL queue, context pool, subscriber store).
 
@@ -73,14 +73,13 @@ reliable choice.
 ### 3.1 Two plist files
 
 | Plist label | Trigger | Runs | Responsibility |
-|---|---|---|---|
-| `com.daglas.outbound` | `StartInterval` 1800 | `python run.py --interval` | Daily lesson: fetch, generate, queue |
-| `com.daglas.runner` | `KeepAlive` + `RunAtLoad` | `python run.py` | Inbound email polling, sender dispatch |
+|---|---|---|---|---|
+| `com.daglas.lessonGenerator` | `StartInterval` 1800 | `python run.py --lesson` | Fetch articles → generate lesson → queue |
+| `com.daglas.runner` | `KeepAlive` + `RunAtLoad` | `python run.py` | `emailReceiver` (IMAP), `emailSender` (queue dispatch) |
 
-### 3.2 Outbound pipeline — wall-time gate
+### 3.2 lessonGenerator — wall-time gate
 
-`run.py --interval` is a periodic mode fired by launchd. The
-pipeline:
+`run.py --lesson_generator` is a periodic mode fired by launchd:
 
 1. Fetches context, generates lesson, queues to sender queue JSONL
 2. Uses `datetime.now(timezone.utc)` to check whether it's past `send_time`
@@ -88,8 +87,8 @@ pipeline:
 3. Since launchd fires every 30 minutes, the worst-case wall-time delay from
    the configured time is 30 minutes — even if the system was sleeping.
 
-The outbound pipeline already handles idempotency: it writes to the sender
-queue, not directly to SMTP. Multiple invocations of `--interval` within the
+The lesson already handles idempotency: it writes to the sender queue,
+not directly to SMTP. Multiple invocations of `--interval` within the
 same day will simply re-queue the same lesson, and the sender queue handles
 dedup at the dispatch layer.
 
@@ -97,9 +96,9 @@ dedup at the dispatch layer.
 
 The KeepAlive `run.py` handles:
 
-- **EmailReceiver** — polls IMAP every `email_receiver_poll_interval` (~30s).
+- **emailReceiver** — polls IMAP every `email_receiver_poll_interval` (~30s).
   A few seconds of monotonic drift after sleep is harmless for IMAP polling.
-- **EmailSenderQueue** — dispatches immediate/scheduled emails on configurable
+- **emailSender** — dispatches immediate/scheduled emails on configurable
   intervals (~20s/120s). Similarly tolerant of small drift.
 
 These run hundreds of times per day. Even a 1-hour sleep only delays one
@@ -111,10 +110,10 @@ dispatch.
 - **System sleeps through send_time**: launchd fires at the next 30-minute
   mark after wake. Lesson is queued with `send_at=immediate` if the wall
   time is past the original `send_time`. Max delay: 30 minutes.
-- **Multiple outbound fires in one day**: pipeline checks `send_time` — if
+- **Multiple lessonGenerator fires in one day**: process checks `send_time` — if
   already past, skips re-generation. Dedup handled at sender queue.
-- **Crash during outbound**: launchd restarts `KeepAlive` runner immediately;
-  outbound will fire at next 30-minute interval.
+- **Crash during lessonGenerator**: launchd restarts `KeepAlive` runner immediately;
+  lessonGenerator fires at next 30-minute interval.
 - **Config change**: Run `scripts/install_launchd.py` again to regenerate
   plists. Old jobs are unloaded first.
 
@@ -130,15 +129,15 @@ python scripts/uninstall_launchd.py
 # Check status
 launchctl list | grep daglas
 
-# Manual outbound (any time)
-python run.py --interval
+# Manual lesson generation (any time)
+python run.py --lesson
 ```
 
 ## 6. Unit Test Strategy
 
 - `pytest tests/test_launchd.py`:
   - `generate_plists()` returns 2 plists with correct structure
-  - Outbound plist has `StartInterval` = 1800
+  - lessonGenerator plist has `StartInterval` = 1800
   - Runner plist has `KeepAlive=true` and `RunAtLoad=true`
   - `ProgramArguments` points to correct python + run.py
   - `write_plists()` produces valid XML (`plutil -lint`)
@@ -147,10 +146,10 @@ python run.py --interval
 
 - `python scripts/install_launchd.py` generates 2 valid plist files and loads
   both
-- `launchctl list | grep daglas` shows both `com.daglas.outbound` and
+- `launchctl list | grep daglas` shows both `com.daglas.lessonGenerator` and
   `com.daglas.runner`
-- The `com.daglas.outbound` process runs at least once every 30 minutes
-- After sleep, the outbound pipeline fires within 30 minutes of wake
+- The `com.daglas.lessonGenerator` process runs at least once every 30 minutes
+- After sleep, the lessonGenerator fires within 30 minutes of wake
 - The persistent runner restarts automatically if killed
 - `scripts/uninstall_launchd.py` unloads and removes both plists
 - `ruff check . && ruff format --check .` passes
@@ -163,24 +162,40 @@ scripts/
 ├── uninstall_launchd.py            ✓  (new)
 tests/
 ├── test_launchd.py                 ✓  (new)
-daglas/
-├── pipeline.py                     △  (--interval mode already exists)
-run.py                              △  (--interval flag already exists)
+run.py                              △  (--lesson flag)
 ```
 
 (✓ = new, △ = modified — no modifications needed beyond what already exists)
 
 ## Discussion
 
-### 2026-06-15 — Split design: launchd outbound + persistent runner
+### 2026-06-17 — Renamed plist labels to action-based naming
+
+**What changed:**
+- Plist label renamed: `com.daglas.outbound` → `com.daglas.lessonGenerator`
+- All prose updated to use service names instead of data direction:
+  lessonGenerator, emailReceiver, emailSender.
+- `scripts/install_launchd.py`, `scripts/uninstall_launchd.py`,
+  `tests/test_launchd.py` updated to match.
+
+**Why:**
+- "outbound" and "inbound" describe data direction, not what the code
+  does. lessonGenerator, emailReceiver, emailSender describe domain actions.
+
+**Impact on implementation plan:**
+- Existing plist files on disk must be manually unloaded and removed before
+  re-installing with the new label.
+- The `com.daglas.runner` label stays unchanged (it's already action-agnostic).
+
+### 2026-06-15 — Split design: launchd lessonGenerator + persistent runner
 
 **What changed:**
 - Rewritten from single-KeepAlive design to two-plist split:
-  - `com.daglas.outbound` — `StartInterval` 1800, runs `--interval`
+  - `com.daglas.lessonGenerator` — `StartInterval` 1800, runs `--lesson`
   - `com.daglas.runner` — `KeepAlive` + `RunAtLoad`, persistent
 - Rationale: Python monotonic timers drift across sleep/wake cycles. launchd
   (PID 1) stays awake and tracks wall time correctly.
-- Outbound pipeline checks `datetime.now(timezone.utc)` against config to
+- lessonGenerator checks `datetime.now(timezone.utc)` against config to
   decide whether to generate. Max 30 min delay after configured time.
 - Persistent runner still uses monotonic timers — drift is acceptable for
   IMAP polling and email dispatch (hundreds of cycles per day).
@@ -189,14 +204,14 @@ run.py                              △  (--interval flag already exists)
 **Impact on implementation plan:**
 - Launchd task doc updated to reflect split design.
 - No changes needed to existing code — `--interval` flag and `_run_interval()`
-  already exist on both pipeline and run.py.
+  already exist on run.py.
 
 **TODO actions:**
 - [x] Rewrite task doc with split design and sleep/wake background.
-- [ ] Write `scripts/install_launchd.py` — generate 2 plists, load both.
-- [ ] Write `scripts/uninstall_launchd.py`.
-- [ ] Write `tests/test_launchd.py`.
-- [ ] Test: sleep/wake cycle, verify outbound fires within 30 min of wake.
+- [x] Write `scripts/install_launchd.py`.
+- [x] Write `scripts/uninstall_launchd.py`.
+- [x] Write `tests/test_launchd.py`.
+- [ ] Test: sleep/wake cycle, verify lessonGenerator fires within 30 min of wake.
 - [ ] Test: kill persistent runner, verify `KeepAlive` restarts it.
 - [ ] Run `ruff check . && ruff format --check .`.
 - [ ] Run full test suite `pytest`.
