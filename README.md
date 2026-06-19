@@ -19,7 +19,7 @@ graph LR
     Site{{svt.se / dn.se}}:::external
     Fetcher[ContextFetcher]:::core
     Pool[(ContextPool)]:::store
-    LLM{{Ollama / mlx}}:::external
+    LLM{{Ollama / mlx / llama.cpp}}:::external
     Generator[LessonGenerator]:::core
     Formatter[Formatter]:::core
     Sender[EmailSenderQueue]:::core
@@ -75,34 +75,17 @@ cp daglas/config_default.yaml config.yaml
 ## Usage
 
 ```bash
-# Dry run — fetch context, print what would be sent, skip LLM call
-python run.py --dry-run
+# One-shot: fetch, generate, queue, exit
+python run.py --generate
 
-# Fetch articles only
-python run.py --fetch-only
-
-# Generate a lesson from already-fetched context
-python run.py --generate-only
-
-# Full pipeline (fetch + generate + queue)
-python run.py
-
-# Full pipeline with immediate send
-python run.py --send
-
-# With HTML output
-python run.py --html --send
-
-# Interval mode — run once and exit (for launchd / cron)
-python run.py --interval
-
-# Persistent mode — IMAP polling + sender queue daemon
+# Default: persistent daemon (IMAP polling + sender queue)
 python run.py
 ```
 
 `run.py` runs in **persistent mode** by default (stays alive, polls IMAP,
-dispatches queued emails). Pass any explicit flag (`--dry-run`, `--fetch-only`,
-`--interval`, etc.) for one-shot mode.
+dispatches queued emails). Pass `--generate` for a one-shot fetch-generate-queue
+cycle that exits when done. Set `DAGLAS_LOG_LEVEL=DEBUG` to see per-article
+fetch timing and date-tracing logs.
 
 ## launchd integration (macOS)
 
@@ -117,7 +100,7 @@ Two services:
 
 | Service | Mode | Behaviour |
 |---|---|---|
-| `com.daglas.lessonGenerator` | `StartInterval` 1800s | Fires `run.py --interval` every 30 min — generates and queues the daily lesson |
+| `com.daglas.lessonGenerator` | `StartInterval` 1800s | Fires `run.py --generate` every 30 min — generates and queues the daily lesson |
 | `com.daglas.runner` | `KeepAlive` + `RunAtLoad` | Keeps persistent mode alive (IMAP, sender queue), restarts on crash |
 
 launchd tracks wall time even across sleep/wake cycles, so the daily
@@ -130,9 +113,9 @@ All settings in `config.yaml` (copy from `daglas/config_default.yaml`).
 ### Core
 
 | Key | Default | Description |
-|---|---|---|
-| `llm_endpoint` | `http://localhost:11434/v1` | LLM API endpoint |
-| `llm_model` | `gemma4:latest` | Model name |
+|---|---|---|---|
+| `llm_endpoint` | `""` | LLM API endpoint (e.g. `http://localhost:11434/v1`) |
+| `llm_model` | `""` | Model name (e.g. `gemma4:latest`) |
 | `llm_api_key` | `""` | API key if required |
 | `max_context_length` | `500` | Max characters for article context sent to LLM |
 | `article_word_limit` | `100` | Word limit per article displayed in lesson |
@@ -171,6 +154,7 @@ sources:
 | `smtp_user` | `""` | SMTP username |
 | `smtp_password` | `""` | SMTP password |
 | `from_address` | `""` | Sender email address |
+| `to_addresses` | `[]` | Default recipient list |
 
 ### Email (IMAP)
 
@@ -188,6 +172,13 @@ sources:
 |---|---|---|
 | `email_sender_queue_immediate_interval` | `20` | Poll interval (s) for immediate queue |
 | `email_sender_queue_scheduled_interval` | `300` | Poll interval (s) for scheduled queue |
+
+### Paths
+
+| Key | Default | Description |
+|---|---|---|
+| `data_dir` | `data` | Runtime data directory (JSONL, subscribers) |
+| `prompts_dir` | `prompts` | LLM prompt template directory |
 
 ## Project structure
 
@@ -218,7 +209,6 @@ scripts/
 tests/                         # Mirrors daglas/ structure
 tasks/                         # Module design docs (read before coding)
 data/                          # Runtime data (JSONL, subscribers)
-output/                        # Generated lesson files
 run.py                         # CLI entry point
 ```
 
