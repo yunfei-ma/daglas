@@ -49,7 +49,7 @@ Parse → Filter → [Crawl → Extract → Store] × N  (repeated per site thre
 ## 3. Scope (MVP)
 
 - **Content channels**: flat sitemap parsing (config must point to a `<urlset>` sitemap, not a `<sitemapindex>`).
-- **Extraction**: full-article content, title, publish date, author, language.
+- **Extraction**: full-article content, title, publish date.
 - **Age-based filtering**: configurable `max_age_hours` per source skips stale entries before HTTP fetch.
 - **Deduplication**: by URL within a single run, plus cross-session dedup against previously stored URLs (configurable lookback window).
 - **Parallel site threads**: each source runs in its own daemon-managed thread; `max_site_threads` (default 12) limits concurrency with queuing for excess sources.
@@ -221,7 +221,7 @@ graph TD
 > - `<<extend>>`: Failure is optional — it only triggers when the thread encounters an unrecoverable error (sitemap unreachable, DNS timeout, connection reset). On failure, the thread logs the error context (source name, error type, URL) and exits gracefully. No retry, no cascading state.
 >
 > **Result collection details:**
-> - **What:** each extracted article is an `Article` dataclass with fields ordered: `publish_date`, `updated_date`, `source`, `author`, `language`, `category`, `tags`, `title`, `body`, `url`. No batch — articles are stored one at a time as they are extracted.
+> - **What:** each extracted article is an `Article` dataclass with fields ordered: `publish_date`, `title`, `tags`, `body`, `source`, `url`. No batch — articles are stored one at a time as they are extracted.
 > - **How (mechanism):** the daemon (as per-site thread manager) creates one `SiteThreadContext` per source and submits its `run()` method to the thread pool. Inside `run()`, immediately after each article is successfully extracted, it calls `self.store.store_article(article)`. The method returns `None` on success — the daemon has no batch to collect.
 > - **Who (recipient):** the daemon instance (`ContextFetcherDaemon`) is the executor — it submits the thread and monitors completion or failure via `as_completed()`. The daemon calls `future.result()` only to detect exceptions; the return value is `None` and is discarded.
 > - **Where:** each context owns its own scope — no shared list, no shared `seen` set across contexts. Articles go directly from the extraction loop into `ContextPool` one call at a time.
@@ -328,11 +328,7 @@ classDiagram
     class Article {
         <<dataclass>>
         +publish_date str | None
-        +updated_date str | None
         +title str
-        +author str | None
-        +language str | None
-        +category str | None
         +tags list[str]
         +body str
         +source str
@@ -435,10 +431,7 @@ Create `daglas/context_fetcher.py` with `SitemapEntry`, `Article`, `SiteThreadCo
    - `title`, `description` → `title`
    - `raw_text` → `body`
    - `date` → `publish_date`
-   - `author` → `author`
-   - `categories` → `category` (first category)
    - `tags` → `tags`
-   - `language` → `language`
    - `source` → derived from URL domain or config name
 4. Fallback: if trafilatura returns nothing useful, try BeautifulSoup extraction of `<article>` or `<main>` content.
 

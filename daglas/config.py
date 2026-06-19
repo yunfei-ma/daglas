@@ -16,6 +16,7 @@ class SourceConfig:
     name: str = ""
     sitemap: str = ""
     max_age_hours: int = 0
+    max_daily_articles: int = 0
 
 
 @dataclass

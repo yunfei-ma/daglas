@@ -33,11 +33,7 @@ class SitemapEntry:
 @dataclass
 class Article:
     publish_date: str | None = None
-    updated_date: str | None = None
     title: str = ""
-    author: str | None = None
-    language: str | None = None
-    category: str | None = None
     tags: list[str] = field(default_factory=list)
     body: str = ""
     source: str = ""
@@ -255,13 +251,8 @@ def extract_article(url: str, html: str) -> Article:
             title=title,
             body=result.get("text", ""),
             publish_date=_safe_str(result.get("date")),
-            author=_safe_str(result.get("author")),
             source=_domain_from_url(url),
-            category=_safe_str(result.get("categories", [None])[0])
-            if result.get("categories")
-            else None,
             tags=result.get("tags") or [],
-            language=_safe_str(result.get("language")),
         )
 
     soup = BeautifulSoup(html, "lxml")
@@ -351,12 +342,14 @@ def fetch_context(
                 errors.append(f"{sitemap_url}: parse failed: {e}")
                 continue
 
+            source_max = source.get("max_daily_articles", 0) or 0
+            if source_max:
+                entries = entries[:source_max]
+
             for entry in entries:
                 if entry.url in seen:
                     continue
                 seen.add(entry.url)
-                if max_daily_articles and len(articles) >= max_daily_articles:
-                    break
                 try:
                     article = _fetch_article(entry, client)
                     if not article.title and entry.title:
@@ -409,14 +402,12 @@ class ContextFetcherDaemon:
         *,
         fetch_time: str = "06:00",
         poll_interval: int = 86400,
-        max_daily_articles: int = 3,
         max_site_threads: int = 12,
     ):
         self._source_configs = source_configs
         self._pool = pool
         self._fetch_time = fetch_time
         self._poll_interval = poll_interval
-        self._max_daily_articles = max_daily_articles
         self._max_site_threads = max_site_threads
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None

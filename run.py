@@ -184,11 +184,13 @@ def main() -> None:
         level = logging.INFO
     logging.basicConfig(
         level=level,
-        format="[%(name)s] %(message)s",
+        format="%(levelname)-5s [%(name)s] %(message)s",
         stream=sys.stderr,
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("trafilatura").setLevel(logging.WARNING)
     daglas_config.config = load_config()
 
     if args.generate:
