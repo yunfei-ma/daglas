@@ -3,5 +3,6 @@ __pycache__/
 *.pyc
 AGENTS.md
 implementation_plan.md
+output/
 
 .skills/
