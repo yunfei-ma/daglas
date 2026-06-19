@@ -61,7 +61,7 @@ Two distinct launchd services control the daglas processes:
 
 | launchd service | Runs | Owner of |
 |---|---|---|
-| `com.daglas.lessonGenerator` | `python run.py --lesson_generator` | **lessonGenerator** — fetch, generate, queue, exit |
+| `com.daglas.lessonGenerator` | `python run.py --generate` | **lessonGenerator** — fetch, generate, queue, exit |
 | `com.daglas.runner` | `python run.py` (persistent) | **emailReceiver** + **emailSender** — stays alive |
 
 ```mermaid
@@ -76,7 +76,7 @@ graph LR
     ER["emailReceiver<br/>IMAP poll → queue → process"]:::svc
     ES["emailSender<br/>dispatch queued mail"]:::svc
 
-    LD -->|fires --lesson_generator| LG
+    LD -->|fires --generate| LG
     LG -->|exits| LD
 
     Sys -->|start| ER
@@ -131,7 +131,7 @@ threads.
 - **Pipeline glue**: wire `EmailProcessor.add_listener(subscriber_store.handle_email)`
 - **Lifecycle**: start `emailSender` and `emailReceiver`, then enter a persistent main loop that keeps the process alive. On exit: stop `emailReceiver`, stop `emailSender`. `lessonGenerator` is not managed here — it runs as a separate `--lesson` process fired by launchd (see `tasks/macos_launchd.md`).
 - **Exit**: Ctrl+C or type `q` + Enter. No `--daemon` flag needed — persistent is the default.
-- **CLI interface**: `--lesson_generator` to run the full lesson lifecycle (fetch → generate → queue) and exit
+- **CLI interface**: `--generate` to run the full lesson lifecycle (fetch → generate → queue) and exit
 
 Non-responsibilities: classification logic, subscription rules, handler functions, content inspection, SMTP dispatch.
 
@@ -290,7 +290,7 @@ run.py is intentionally thin — most logic lives in modules. Test via integrati
 - `_wire_email_receiver(cfg)` wires `SubscriberStore.handle_email` directly to `EmailProcessor`.
 - `run.py` contains no classification or subscription logic.
 - `python run.py` (no flags) stays alive until Ctrl+C or `q`+Enter is pressed.
-- `python run.py --lesson_generator` runs lessonGenerator (fetch → generate → queue lesson) and exits.
+- `python run.py --generate` runs lessonGenerator (fetch → generate → queue lesson) and exits.
 - `emailReceiver` polls IMAP continuously while the persistent process lives.
 - `emailSender` dispatches immediate and scheduled emails while the persistent process lives.
 - Ctrl+C and `q`+Enter stop `emailReceiver` and `emailSender` before exit.

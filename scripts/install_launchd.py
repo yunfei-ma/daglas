@@ -108,8 +108,13 @@ def install() -> None:
 
 
 if __name__ == "__main__":
+    level = getattr(
+        logging, os.environ.get("DAGLAS_LOG_LEVEL", "INFO").upper(), logging.INFO
+    )
+    if not isinstance(level, int):
+        level = logging.INFO
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="[%(name)s] %(message)s",
         stream=sys.stderr,
     )

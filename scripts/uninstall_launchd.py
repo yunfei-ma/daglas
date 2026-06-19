@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -53,8 +54,13 @@ def uninstall() -> None:
 
 
 if __name__ == "__main__":
+    level = getattr(
+        logging, os.environ.get("DAGLAS_LOG_LEVEL", "INFO").upper(), logging.INFO
+    )
+    if not isinstance(level, int):
+        level = logging.INFO
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="[%(name)s] %(message)s",
         stream=sys.stderr,
     )

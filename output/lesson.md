@@ -1,42 +1,38 @@
-***Hej!*** 👋 Are you ready for today's Swedish news lesson? I’m Aao, and we're going to look at a story from the headlines. Don't worry if some words are new—we'll tackle them together!
+✨ Hej! Jag är ÅÄÖ Lingv, men du kan kalla mig Aao. ✨
 
-Here is your reading practice:
+Ready for your daily Swedish reading practice? 👋 Today we’re looking at some news from nature and food—it's all about apples! This piece is perfect because it uses straightforward language while discussing something interesting.
 
-### 📰 Svenska Nyheter (Swedish News)
-
-**Man döms efter att ha hotat en sjuårig pojke**
-*(A man is convicted after having threatened a seven-year-old boy)*
-
-En man döms för olaga hot av Eksjö tingsrätt efter att ha hotat att slå en sjuårig pojke.
-(A man was convicted of illegal threats by the Eksjö District Court after he had threatened to hit a seven-year-old boy.)
-
-Det var vid Ekenässjön som en man och pappan till pojken började prata.
-(It was at Ekenässjön that a man and the boy's father started to chat/talk together.)
-
-Under ordväxlingen så gick den sjuåriga pojken emellan.
-(During the exchange of words, the seven-year-old boy walked in between them.)
-
-Det var då som mannen hotfullt skrek ”Jag ska slå dig på käften” till pojken samtidigt som han drog ett finger från sida till sida över halsen.
-(It was then that the man shouted menacingly, "I am going to hit you on the cheek," to the boy while simultaneously drawing a finger side to side over his neck.)
+Let's read! 🍎
 
 ***
 
-### Förståelsen (The Understanding)
+### Äppledalens äpplen får EU-skyddad beteckning
+*(Apple Valley's apples get an EU-protected designation)*
 
-*Pojken* literally means *the boy*. Notice how in Swedish news articles, they often use specific locations, like *Ekenässjön*.
-The phrase **"Det var vid X som..."** is a neat construction! It helps set the scene: "It was at X that..."
-Also, if you see **meningsfullt**, it just means 'in a meaningful way' or 'with meaning.'
+**Äpplen från Äppledalen har fått en ny märkning.**
+(Apples from Apple Valley have received a new label/designation.)
+*Senaste nytt! De vet att de kan skriva ut det på förpackningen.* (Last news! They know they can print it on the packaging.)
+*(Latest news! They know they can print it on the packaging.)*
 
-Keep practicing like this—you are doing so well with your Swedish! 💪
+**Den här märkningen kallas "Skyddad geografisk beteckning".**
+(This label is called "Protected geographic designation.")
+*Det är ett officiellt erkännande.* (It is an official recognition/acknowledgement.)
+
+**Märkningen betyder att äpplena kommer från just det området.**
+(The label means that the apples come from exactly that area.)
+*(Det gör kvaliteten speciell, och kopplar den till var de växer.)* (This makes the quality special, and links it to where they grow.)
 
 ***
 
-### 📚 Nyckelord (Key Vocabulary)
+### 🍎 Your Vocabulary Pop Quiz (Aao's favorite words!) 🫐
 
-Here are five words from the article that might be helpful for your next reading session:
+Here are 5 useful words from the text that will help your Swedish journey:
 
-1. **Döms:** Convicted / Sentenced
-2. **Hotat:** Threatened (past participle of *hota*)
-3. **Tingsrätt:** District Court (a specific type of court system)
-4. **Ordväxlingen:** The exchange of words / Conversation
-5. **Hotfullt:** Threateningly /ˈhɔtolft/
+1.  **Äpple:** Apple
+2.  **Märkning:** Label/Designation
+3.  **Kallas:** Is called (from *kalla*)
+4.  **Officiellt:** Official
+5.  **Området:** The area
+
+***
+*Hoppas det var kul läsning i dag! Keep reading, Super Swenglish friend! Tack och hej! 👋*

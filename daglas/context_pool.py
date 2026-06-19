@@ -19,12 +19,12 @@ class ContextPool:
     def _today_path(self) -> Path:
         return self._data_dir / f"{date.today().isoformat()}.jsonl"
 
-    def store_articles(self, articles: list[dict]) -> None:
+    def store_article(self, article: dict) -> None:
+        """Append one article to today's jsonl file, creating dirs as needed."""
         path = self._today_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a") as f:
-            for article in articles:
-                f.write(json.dumps(article, ensure_ascii=False) + "\n")
+            f.write(json.dumps(article, ensure_ascii=False) + "\n")
 
     def retrieve_articles(self) -> list[dict]:
         path = self._today_path()

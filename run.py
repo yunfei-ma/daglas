@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -80,7 +81,7 @@ def _queue_lesson(lesson: Email, send_at: str, sender_queue: EmailSenderQueue) -
     )
 
 
-def _run_lesson_generator() -> None:
+def _run_generate() -> None:
     cfg = daglas_config.config
     sender_queue = EmailSenderQueue()
     sender_queue.start()
@@ -170,14 +171,19 @@ def _run_persistent() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Dagläs — Daily Swedish Lesson")
     parser.add_argument(
-        "--lesson_generator",
+        "--generate",
         action="store_true",
         help="Run full lesson lifecycle (fetch, generate, queue) and exit",
     )
     args = parser.parse_args()
 
+    level = getattr(
+        logging, os.environ.get("DAGLAS_LOG_LEVEL", "INFO").upper(), logging.INFO
+    )
+    if not isinstance(level, int):
+        level = logging.INFO
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="[%(name)s] %(message)s",
         stream=sys.stderr,
     )
@@ -185,8 +191,8 @@ def main() -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     daglas_config.config = load_config()
 
-    if args.lesson_generator:
-        _run_lesson_generator()
+    if args.generate:
+        _run_generate()
     else:
         _run_persistent()
 

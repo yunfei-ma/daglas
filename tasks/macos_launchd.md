@@ -4,7 +4,7 @@
 
 Use macOS `launchd` for two distinct responsibilities:
 
-- **lessonGenerator scheduling** — fire `run.py --lesson_generator` every 30 minutes
+- **lessonGenerator scheduling** — fire `run.py --generate` every 30 minutes
   via `StartInterval`. The process fetches articles, generates a lesson via
   LLM, and queues it for sending. Max 30-minute delay after the configured
   time, regardless of sleep/wake cycles.
@@ -79,7 +79,7 @@ reliable choice.
 
 ### 3.2 lessonGenerator — wall-time gate
 
-`run.py --lesson_generator` is a periodic mode fired by launchd:
+`run.py --generate` is a periodic mode fired by launchd:
 
 1. Fetches context, generates lesson, queues to sender queue JSONL
 2. Uses `datetime.now(timezone.utc)` to check whether it's past `send_time`

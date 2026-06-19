@@ -7,7 +7,7 @@ import httpx
 from daglas.context_fetcher import (
     Article,
     ContextFetcherDaemon,
-    FetchResult,
+    SiteThreadContext,
     deduplicate,
     extract_article,
     fetch_context,
@@ -158,7 +158,7 @@ class TestFetchContext:
         result = fetch_context([], pool)
         assert result.articles == []
         assert result.errors == []
-        pool.store_articles.assert_not_called()
+        pool.store_article.assert_not_called()
 
     def test_sitemap_unreachable(self):
         def handler(request):
@@ -174,7 +174,7 @@ class TestFetchContext:
             sources = [{"sitemap": "https://example.se/sitemap.xml", "name": "test"}]
             result = fetch_context(sources, pool)
             assert len(result.errors) >= 1
-            pool.store_articles.assert_not_called()
+            pool.store_article.assert_not_called()
 
     def test_all_fail(self):
         def handler(request):
@@ -191,7 +191,7 @@ class TestFetchContext:
             result = fetch_context(sources, pool)
             assert len(result.errors) >= 1
             assert result.articles == []
-            pool.store_articles.assert_not_called()
+            pool.store_article.assert_not_called()
 
     def test_deduplicates_across_sitemaps(self):
         ARTICLE_HTML_SIMPLE = "<html><body><p>Hej</p></body></html>"
@@ -212,7 +212,7 @@ class TestFetchContext:
             ]
             result = fetch_context(sources, pool)
             assert len(result.articles) == 2
-            pool.store_articles.assert_called_once()
+            assert pool.store_article.call_count == 2  # one call per unique article
 
     def test_skips_old_articles(self):
         now = datetime.now(timezone.utc)
@@ -308,7 +308,7 @@ class TestFetchContext:
             )
             assert len(result.errors) >= 1
             assert "sitemap index" in result.errors[0].lower()
-            pool.store_articles.assert_not_called()
+            pool.store_article.assert_not_called()
 
 
 class TestContextFetcherDaemon:
@@ -326,29 +326,26 @@ class TestContextFetcherDaemon:
         daemon = ContextFetcherDaemon([], pool)
         assert not daemon.is_running
 
-    def test_fetch_once(self):
+    def test_fetch_once_empty_sources(self):
         pool = MagicMock()
         daemon = ContextFetcherDaemon([], pool)
-
-        with patch(
-            "daglas.context_fetcher.fetch_context", return_value=FetchResult()
-        ) as mock_fetch:
-            result = daemon.fetch_once()
-            mock_fetch.assert_called_once()
-            assert isinstance(result, FetchResult)
+        daemon.fetch_once()
+        assert daemon._contexts == {}
 
     def test_fetch_once_with_sources(self):
         pool = MagicMock()
         sources = [{"sitemap": "https://example.se/sitemap.xml", "name": "test"}]
-        daemon = ContextFetcherDaemon(sources, pool, max_articles=5)
+        daemon = ContextFetcherDaemon(sources, pool, max_site_threads=4)
 
-        expected = FetchResult(articles=[Article(url="https://example.se/a")])
-        with patch(
-            "daglas.context_fetcher.fetch_context", return_value=expected
-        ) as mock_fetch:
-            result = daemon.fetch_once()
-            mock_fetch.assert_called_once_with(sources, pool, max_articles=5)
-            assert len(result.articles) == 1
+        with (
+            patch(
+                "daglas.context_fetcher.read_sitemap_entries",
+                return_value=[],
+            ),
+        ):
+            daemon.fetch_once()
+            assert "test" in daemon._contexts
+            assert daemon._contexts["test"].status == "COMPLETED"
 
     def test_start_stop_idempotent(self):
         pool = MagicMock()
@@ -359,3 +356,106 @@ class TestContextFetcherDaemon:
         daemon.stop()
         daemon.stop()
         assert not daemon.is_running
+
+    def test_stop_context_unknown_is_noop(self):
+        pool = MagicMock()
+        daemon = ContextFetcherDaemon([], pool)
+        daemon.stop_context("nonexistent")
+        assert True  # no error
+
+    def test_stop_context_signals_context(self):
+        pool = MagicMock()
+        sources = [{"sitemap": "https://example.se/sitemap.xml", "name": "test"}]
+        daemon = ContextFetcherDaemon(sources, pool, max_site_threads=4)
+
+        daemon.fetch_once()
+        ctx = daemon._contexts["test"]
+        assert not ctx._stop_event.is_set()
+
+        daemon.stop_context("test")
+        assert ctx._stop_event.is_set()
+
+    def test_status_unknown_source(self):
+        pool = MagicMock()
+        daemon = ContextFetcherDaemon([], pool)
+        result = daemon.status("nonexistent")
+        assert result == {"error": "source not found"}
+
+    def test_status_single_source(self):
+        pool = MagicMock()
+        sources = [{"sitemap": "https://example.se/sitemap.xml", "name": "test"}]
+        daemon = ContextFetcherDaemon(sources, pool, max_site_threads=4)
+
+        with patch("daglas.context_fetcher.read_sitemap_entries", return_value=[]):
+            daemon.fetch_once()
+            result = daemon.status("test")
+            assert result["status"] in ("COMPLETED", "RUNNING")
+            assert "articles_count" in result
+            assert "errors" in result
+
+    def test_status_all_sources(self):
+        pool = MagicMock()
+        sources = [
+            {"sitemap": "https://a.se/sitemap.xml", "name": "a"},
+            {"sitemap": "https://b.se/sitemap.xml", "name": "b"},
+        ]
+        daemon = ContextFetcherDaemon(sources, pool, max_site_threads=4)
+
+        with patch("daglas.context_fetcher.read_sitemap_entries", return_value=[]):
+            daemon.fetch_once()
+            result = daemon.status()
+            assert "a" in result
+            assert "b" in result
+            for info in result.values():
+                assert "status" in info
+                assert "articles_count" in info
+                assert "errors" in info
+
+
+class TestSiteThreadContext:
+    def test_initial_state(self):
+        ctx = SiteThreadContext(source_config={}, store=MagicMock())
+        assert ctx.status == "PENDING"
+        assert ctx.errors == []
+        assert ctx.seen == set()
+        assert not ctx._stop_event.is_set()
+
+    def test_stop_sets_event(self):
+        ctx = SiteThreadContext(source_config={}, store=MagicMock())
+        ctx.stop()
+        assert ctx._stop_event.is_set()
+
+    def test_run_sets_completed_with_empty_sitemap(self):
+        pool = MagicMock()
+        ctx = SiteThreadContext(
+            source_config={"sitemap": "https://example.se/sitemap.xml", "name": "test"},
+            store=pool,
+        )
+        with patch("daglas.context_fetcher.read_sitemap_entries", return_value=[]):
+            ctx.run()
+            assert ctx.status == "COMPLETED"
+
+    def test_run_sets_failed_on_sitemap_error(self):
+        pool = MagicMock()
+        ctx = SiteThreadContext(
+            source_config={"sitemap": "https://example.se/sitemap.xml", "name": "test"},
+            store=pool,
+        )
+        with patch(
+            "daglas.context_fetcher.read_sitemap_entries",
+            side_effect=httpx.ConnectError("fail"),
+        ):
+            ctx.run()
+            assert ctx.status == "FAILED"
+            pool.store_article.assert_not_called()
+
+    def test_run_stops_on_event(self):
+        pool = MagicMock()
+        ctx = SiteThreadContext(
+            source_config={"sitemap": "https://example.se/sitemap.xml", "name": "test"},
+            store=pool,
+        )
+        ctx.stop()
+        with patch("daglas.context_fetcher.read_sitemap_entries", return_value=[]):
+            ctx.run()
+            assert ctx.status == "STOPPED"
