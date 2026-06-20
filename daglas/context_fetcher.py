@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class ArticleStore(Protocol):
-    def seen_urls(self, lookback_days: int) -> set[str]: ...
+    def seen_urls(self) -> set[str]: ...
     def store_article(self, article: dict) -> None: ...
 
 
@@ -93,7 +93,7 @@ class SiteThreadContext:
 
     def _load_seen_urls(self) -> None:
         try:
-            self.seen.update(self.store.seen_urls(7))
+            self.seen.update(self.store.seen_urls())
         except Exception:
             logger.warning("Failed to load seen URLs from pool", exc_info=True)
 

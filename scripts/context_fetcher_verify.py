@@ -23,6 +23,7 @@ def main() -> int:
         sources = cfg.sources
 
     pool = ContextPool()
+    pool.clear()
     fetcher = ContextFetcherDaemon(
         sources,
         pool,

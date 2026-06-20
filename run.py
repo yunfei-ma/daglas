@@ -97,6 +97,7 @@ def _run_generate() -> None:
         sys.exit(1)
 
     pool = ContextPool()
+    pool.clear()
 
     if cfg.sources:
         print(f"Fetching context from {len(cfg.sources)} source(s)...")

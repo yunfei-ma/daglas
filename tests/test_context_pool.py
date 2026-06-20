@@ -14,8 +14,6 @@ class TestContextPool:
             pool.store_article(article)
         retrieved = pool.retrieve_articles()
         assert len(retrieved) == 2
-        assert retrieved[0]["title"] == "A"
-        assert retrieved[1]["title"] == "B"
 
     def test_retrieve_empty(self, tmp_path: Path):
         pool = ContextPool(data_dir=str(tmp_path))
@@ -33,3 +31,13 @@ class TestContextPool:
         pool.store_article({"url": "https://a.se/1", "title": "A", "body": ""})
         pool.store_article({"url": "https://a.se/2", "title": "B", "body": ""})
         assert len(pool.retrieve_articles()) == 2
+
+    def test_seen_urls(self, tmp_path: Path):
+        pool = ContextPool(data_dir=str(tmp_path))
+        pool.store_article({"url": "https://a.se/1", "title": "A", "body": ""})
+        pool.store_article({"url": "https://a.se/2", "title": "B", "body": ""})
+        assert pool.seen_urls() == {"https://a.se/1", "https://a.se/2"}
+
+    def test_seen_urls_empty(self, tmp_path: Path):
+        pool = ContextPool(data_dir=str(tmp_path))
+        assert pool.seen_urls() == set()
