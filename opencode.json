@@ -9,6 +9,7 @@
     ".skills/uml_class.md",
     ".skills/uml_component.md",
     ".skills/uml_sequence.md",
-    ".skills/uml_state_machine.md"
+    ".skills/uml_state_machine.md",
+    ".skills/debug_investigation.md"
   ]
 }

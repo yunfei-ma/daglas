@@ -246,7 +246,7 @@ def _judge_article(
     import trafilatura
 
     html = article_resp.text
-    raw = trafilatura.extract(html, output_format="json", include_images=False)
+    raw = trafilatura.extract(html, output_format="json", include_images=False, with_metadata=True)
     if not raw:
         return LlmVerdict(suitable=False, reason="trafilatura returned no text")
 

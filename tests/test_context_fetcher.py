@@ -12,6 +12,7 @@ from daglas.context_fetcher import (
     extract_article,
     fetch_context,
     read_sitemap_entries,
+    _scan_html_for_date,
 )
 
 SITEMAP_PLAIN_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -137,6 +138,83 @@ class TestExtractArticle:
         html = "<html><body><main><p>Fallback content</p></main></body></html>"
         article = extract_article("https://example.se/c", html)
         assert "Fallback content" in article.body
+
+
+class TestScanHtmlForDate:
+    def test_meta_published_time(self):
+        html = '<html><head><meta property="article:published_time" content="2026-06-20T10:00:00+02:00" /></head><body></body></html>'
+        assert _scan_html_for_date(html) == "2026-06-20T10:00:00+02:00"
+
+    def test_meta_name_published_time(self):
+        html = '<html><head><meta name="article:published_time" content="2026-06-19T08:00:00Z" /></head><body></body></html>'
+        assert _scan_html_for_date(html) == "2026-06-19T08:00:00Z"
+
+    def test_json_ld_date_published(self):
+        html = """<html><head><script type="application/ld+json">
+{"@context":"https://schema.org","datePublished":"2026-06-18T12:00:00+02:00"}
+</script></head><body></body></html>"""
+        assert _scan_html_for_date(html) == "2026-06-18T12:00:00+02:00"
+
+    def test_json_ld_date_modified_fallback(self):
+        html = """<html><head><script type="application/ld+json">
+{"@context":"https://schema.org","dateModified":"2026-06-17T14:00:00Z"}
+</script></head><body></body></html>"""
+        assert _scan_html_for_date(html) == "2026-06-17T14:00:00Z"
+
+    def test_time_datetime(self):
+        html = '<html><body><article><time datetime="2026-06-16T09:00:00+02:00">June 16</time></article></body></html>'
+        assert _scan_html_for_date(html) == "2026-06-16T09:00:00+02:00"
+
+    def test_meta_modified_time(self):
+        html = '<html><head><meta property="article:modified_time" content="2026-06-15T11:00:00+02:00" /></head><body></body></html>'
+        assert _scan_html_for_date(html) == "2026-06-15T11:00:00+02:00"
+
+    def test_no_date(self):
+        html = "<html><body><p>No date here</p></body></html>"
+        assert _scan_html_for_date(html) is None
+
+    def test_priority_published_over_modified(self):
+        html = """<html><head>
+<meta property="article:published_time" content="2026-06-20T10:00:00+02:00" />
+<meta property="article:modified_time" content="2026-06-21T10:00:00+02:00" />
+</head><body></body></html>"""
+        assert _scan_html_for_date(html) == "2026-06-20T10:00:00+02:00"
+
+    def test_priority_meta_over_jsonld(self):
+        html = """<html><head>
+<meta property="article:published_time" content="2026-06-19T08:00:00Z" />
+<script type="application/ld+json">{"datePublished": "2026-06-18T00:00:00Z"}</script>
+</head><body></body></html>"""
+        assert _scan_html_for_date(html) == "2026-06-19T08:00:00Z"
+
+    def test_empty_html(self):
+        assert _scan_html_for_date("") is None
+
+    def test_invalid_json_ld_skipped(self):
+        html = """<html><head>
+<script type="application/ld+json">{invalid}</script>
+<meta property="article:published_time" content="2026-06-20T10:00:00+02:00" />
+</head><body></body></html>"""
+        assert _scan_html_for_date(html) == "2026-06-20T10:00:00+02:00"
+
+    def test_extract_article_fallback(self):
+        html = """<html><head>
+<meta property="article:published_time" content="2026-06-20T10:00:00+02:00" />
+<title>Test</title></head>
+<body><article><p>Content</p></article></body></html>"""
+        article = extract_article("https://example.se/a", html)
+        # trafilatura now extracts a date-first (just the date part),
+        # which takes priority over the meta-tag fallback
+        assert article.publish_date == "2026-06-20"
+
+    def test_extract_article_fallback_no_text_body(self):
+        html = """<html><head>
+<meta property="article:published_time" content="2026-06-19T08:00:00Z" />
+<title>Fallback</title></head>
+<body><main><p>Fallback body</p></main></body></html>"""
+        article = extract_article("https://example.se/b", html)
+        # trafilatura date (just the date part) takes priority over meta-tag fallback
+        assert article.publish_date == "2026-06-19"
 
 
 class TestDeduplicate:

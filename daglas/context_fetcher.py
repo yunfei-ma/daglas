@@ -76,7 +76,9 @@ class SiteThreadContext:
 
         self._load_seen_urls()
 
-        with httpx.Client(headers={"User-Agent": "daglas/1.0"}, timeout=30) as client:
+        with httpx.Client(
+            headers={"User-Agent": "daglas/1.0"}, timeout=30, follow_redirects=True
+        ) as client:
             entries = self._fetch_entries(client)
             if entries is None:
                 return
@@ -158,8 +160,13 @@ class SiteThreadContext:
             if not article.publish_date and entry.publish_date:
                 article.publish_date = entry.publish_date
                 logger.debug(
-                    "Backfilled publish_date from sitemap: %s %s",
+                    "DATE_BACKFILL sitemap=%s url=%s",
                     entry.publish_date,
+                    entry.url,
+                )
+            elif not article.publish_date and not entry.publish_date:
+                logger.warning(
+                    "DATE_MISSING no trafilatura date and no sitemap date url=%s",
                     entry.url,
                 )
             article.source = source_name
@@ -226,8 +233,55 @@ def read_sitemap_entries(sitemap_url: str, client: httpx.Client) -> list[Sitemap
     return entries
 
 
+def _strip_result_for_log(result: dict) -> dict:
+    """Return a copy of a trafilatura result dict with long text fields replaced by length."""
+    log = {}
+    for k, v in result.items():
+        if isinstance(v, str) and len(v) > 200:
+            log[k] = f"{len(v)} chars"
+        else:
+            log[k] = v
+    return log
+
+
+def _scan_html_for_date(html: str) -> str | None:
+    soup = BeautifulSoup(html, "lxml")
+
+    for meta in soup.find_all("meta", attrs={"property": "article:published_time"}):
+        if meta.get("content"):
+            return meta["content"].strip()
+
+    for meta in soup.find_all("meta", attrs={"name": "article:published_time"}):
+        if meta.get("content"):
+            return meta["content"].strip()
+
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            data = json.loads(script.string) if script.string else None
+        except json.JSONDecodeError:
+            continue
+        if not data:
+            continue
+        for key in ("datePublished", "dateModified"):
+            val = data.get(key)
+            if val:
+                return str(val).strip()
+
+    for time_tag in soup.find_all("time"):
+        if time_tag.get("datetime"):
+            return time_tag["datetime"].strip()
+
+    for meta in soup.find_all("meta", attrs={"property": "article:modified_time"}):
+        if meta.get("content"):
+            return meta["content"].strip()
+
+    return None
+
+
 def extract_article(url: str, html: str) -> Article:
-    raw = trafilatura.extract(html, output_format="json", include_images=False)
+    raw = trafilatura.extract(
+        html, output_format="json", include_images=False, with_metadata=True
+    )
     if raw:
         try:
             result = json.loads(raw)
@@ -242,27 +296,27 @@ def extract_article(url: str, html: str) -> Article:
             soup = BeautifulSoup(html, "lxml")
             if soup.title and soup.title.string:
                 title = soup.title.string.strip()
-        trafilatura_date = result.get("date")
-        logger.debug(
-            "extract_article: trafilatura date=%r url=%s", trafilatura_date, url
-        )
+        publish_date = _safe_str(result.get("date"))
+        if not publish_date:
+            publish_date = _scan_html_for_date(html)
         return Article(
             url=url,
             title=title,
             body=result.get("text", ""),
-            publish_date=_safe_str(result.get("date")),
+            publish_date=publish_date,
             source=_domain_from_url(url),
             tags=result.get("tags") or [],
         )
-
     soup = BeautifulSoup(html, "lxml")
     title = soup.title.string.strip() if soup.title and soup.title.string else ""
     body_tag = soup.find("article") or soup.find("main") or soup.find("body")
     body = body_tag.get_text(strip=True) if body_tag else ""
+    publish_date = _scan_html_for_date(html)
     return Article(
         url=url,
         title=title,
         body=body,
+        publish_date=publish_date,
         source=_domain_from_url(url),
     )
 
@@ -331,7 +385,9 @@ def fetch_context(
     articles: list[Article] = []
     errors: list[str] = []
 
-    with httpx.Client(headers={"User-Agent": user_agent}, timeout=30) as client:
+    with httpx.Client(
+        headers={"User-Agent": user_agent}, timeout=30, follow_redirects=True
+    ) as client:
         for source in source_configs:
             sitemap_url = source.get("sitemap", "")
             if not sitemap_url:
@@ -357,8 +413,13 @@ def fetch_context(
                     if not article.publish_date and entry.publish_date:
                         article.publish_date = entry.publish_date
                         logger.debug(
-                            "Backfilled publish_date from sitemap: %s %s",
+                            "DATE_BACKFILL sitemap=%s url=%s",
                             entry.publish_date,
+                            entry.url,
+                        )
+                    elif not article.publish_date and not entry.publish_date:
+                        logger.warning(
+                            "DATE_MISSING no trafilatura date and no sitemap date url=%s",
                             entry.url,
                         )
                     article.source = source.get("name", _domain_from_url(entry.url))

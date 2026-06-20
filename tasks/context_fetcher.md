@@ -310,6 +310,45 @@ graph TD
 **Description:** one article URL fails (timeout, 404); remaining articles still processed.
 **Reasoning:** Resilience. With 10+ sources x ~15 articles each, some URLs will inevitably be dead or slow. A single 404 must not tank the entire fetch.
 
+### UC10 — Date extraction pipeline
+
+```mermaid
+graph TD
+    classDef core    fill:#bbe5d5,stroke:#0F6E56,color:#085041
+    classDef store   fill:#cadbea,stroke:#185FA5,color:#0C447C
+    classDef external fill:#f1dfc0,stroke:#BA7517,color:#633806
+
+    UC10[Date Extraction Pipeline]
+    TryTrafilatura[Try Trafilatura Extract]
+    GotDate[Use Date]
+    TryHtmlScan[Scan HTML for Date Indicators]
+    TryBackfill[Fallback to Sitemap Date]
+    NoDate[No Date Available]
+
+    UC10 --> TryTrafilatura
+    TryTrafilatura -->|date found| GotDate
+    TryTrafilatura -->|date is None| TryHtmlScan
+    TryHtmlScan -->|meta / JSON-LD / time found| GotDate
+    TryHtmlScan -->|no indicators| TryBackfill
+    TryBackfill -->|sitemap has date| GotDate
+    TryBackfill -->|no sitemap date either| NoDate
+```
+
+> **Notes**
+> - `Try Trafilatura Extract` — calls `trafilatura.extract(output_format="json")`. Returns `"date"` field if the library finds machine-readable date metadata in HTML. **In practice, trafilatura returns `None` for all 10 configured sources (SVT, SVD, Aftonbladet, Expressen, DI, HD, Sydsvenskan, UNT, NT, VK)** — see `date_extraction_report.md`.
+> - `Scan HTML for Date Indicators` — implemented in `_scan_html_for_date()` at `daglas/context_fetcher.py:245`. Parses HTML with BeautifulSoup looking for `<meta property="article:published_time">`, `<meta name="article:published_time">`, JSON-LD `datePublished`/`dateModified`, `<time datetime>`, and `<meta property="article:modified_time">` (in priority order). Wired into `extract_article()` as fallback when trafilatura's `date` is `None`.
+> - `Fallback to Sitemap Date` — in `_process_entry()` and `fetch_context()`, if `article.publish_date` is `None` after extraction, the sitemap entry's `publish_date` (from `<news:publication_date>` or `<lastmod>`) is copied over. Logged as `DATE_BACKFILL` at DEBUG level.
+> - `No Date Available` — the article is stored without a publish_date. Currently never happens: all 10 sources include dates in their sitemaps, so the backfill always succeeds.
+
+**Description:** when an article page is fetched, the system tries three date sources in order: (1) trafilatura's structured extraction, (2) direct HTML scan for standard date meta tags and JSON-LD, (3) the sitemap entry date. The first source that yields a value wins. If all three fail, the article is stored without a date.
+
+**Why a three-stage pipeline:** trafilatura's date extraction is unreliable for modern React-rendered news pages. It returned `date: None` for 33/33 articles (100%) across all 10 sources during testing. An HTML-scan fallback would capture dates from `<meta property="article:published_time">` or JSON-LD `datePublished` — both present on every source tested. The sitemap backfill is the last line of defence and always succeeds for our sitemap-based sources.
+
+**Current status (2026-06-20):** all three stages are wired:
+- Stage 1 (trafilatura) returns `None` for all 10 sources, as documented in `date_extraction_report.md`.
+- Stage 2 (HTML scan) implemented in `_scan_html_for_date()` at `daglas/context_fetcher.py:245`. Scans `<meta property="article:published_time">`, `<meta name="article:published_time">`, JSON-LD `datePublished`/`dateModified`, `<time datetime>`, and `<meta property="article:modified_time">` (in priority order). Covers all date formats found on the 10 configured source sites.
+- Stage 3 (sitemap backfill) in `_process_entry()` and `fetch_context()` rescues any remaining articles without dates — though now effectively never triggered since all 10 sources have HTML-embedded dates that stage 2 captures.
+
 ## 5. Classes and Data Structures
 
 ```mermaid
