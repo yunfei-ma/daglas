@@ -8,6 +8,9 @@ from daglas.context_fetcher import (
     Article,
     ContextFetcherDaemon,
     SiteThreadContext,
+    SitemapEntry,
+    _backfill_article_date,
+    _parse_date,
     deduplicate,
     extract_article,
     fetch_context,
@@ -217,6 +220,44 @@ class TestScanHtmlForDate:
         assert article.publish_date == "2026-06-19"
 
 
+class TestParseDate:
+    def test_z_suffix_normalised(self):
+        dt = _parse_date("2026-06-20T10:00:00Z")
+        assert dt.tzinfo is not None
+        assert dt.isoformat().endswith("+00:00")
+
+    def test_with_offset(self):
+        dt = _parse_date("2026-06-20T10:00:00+02:00")
+        assert dt.tzinfo is not None
+
+    def test_naive_becomes_utc(self):
+        dt = _parse_date("2026-06-20T10:00:00")
+        assert dt.tzinfo is not None
+        assert str(dt.tzinfo) == "UTC"
+
+
+class TestBackfillArticleDate:
+    def test_backfill_from_entry(self):
+        article = Article(url="https://example.se/a", body="x")
+        entry = SitemapEntry(url="https://example.se/a", publish_date="2026-06-20")
+        _backfill_article_date(article, entry)
+        assert article.publish_date == "2026-06-20"
+
+    def test_keep_existing_date(self):
+        article = Article(
+            url="https://example.se/a", body="x", publish_date="2026-06-19"
+        )
+        entry = SitemapEntry(url="https://example.se/a", publish_date="2026-06-20")
+        _backfill_article_date(article, entry)
+        assert article.publish_date == "2026-06-19"
+
+    def test_no_date_either_side(self):
+        article = Article(url="https://example.se/a", body="x")
+        entry = SitemapEntry(url="https://example.se/a")
+        _backfill_article_date(article, entry)
+        assert article.publish_date is None
+
+
 class TestDeduplicate:
     def test_deduplicate(self):
         articles = [
@@ -374,6 +415,37 @@ class TestFetchContext:
             assert len(result.articles) == 2
             assert result.articles[0].url == "https://example.se/newest"
             assert result.articles[1].url == "https://example.se/oldest"
+
+    def test_max_daily_articles_per_source(self):
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+  <url><loc>https://example.se/1</loc><news:news><news:publication_date>2026-06-20T00:00:00Z</news:publication_date></news:news></url>
+  <url><loc>https://example.se/2</loc><news:news><news:publication_date>2026-06-20T00:00:00Z</news:publication_date></news:news></url>
+  <url><loc>https://example.se/3</loc><news:news><news:publication_date>2026-06-20T00:00:00Z</news:publication_date></news:news></url>
+</urlset>"""
+        body_html = "<html><body><p>Content</p></body></html>"
+        responses = {
+            "https://example.se/sitemap.xml": xml,
+            "https://example.se/1": body_html,
+            "https://example.se/2": body_html,
+            "https://example.se/3": body_html,
+        }
+        client = _mock_client(responses)
+        with patch("daglas.context_fetcher.httpx.Client") as mock_client_cls:
+            mock_client_cls.return_value.__enter__.return_value = client
+            pool = MagicMock()
+            result = fetch_context(
+                [
+                    {
+                        "sitemap": "https://example.se/sitemap.xml",
+                        "name": "test",
+                        "max_daily_articles": 2,
+                    }
+                ],
+                pool,
+            )
+            assert len(result.articles) == 2
 
     def test_sitemap_index_raises(self):
         client = _mock_client({"https://example.se/sitemap.xml": SITEMAP_INDEX_XML})
@@ -537,3 +609,46 @@ class TestSiteThreadContext:
         with patch("daglas.context_fetcher.read_sitemap_entries", return_value=[]):
             ctx.run()
             assert ctx.status == "STOPPED"
+
+    def test_run_fetches_real_articles(self):
+        pool = MagicMock()
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+  <url>
+    <loc>https://example.se/a</loc>
+    <news:news><news:publication_date>2026-06-20T00:00:00Z</news:publication_date><news:title>Article A</news:title></news:news>
+  </url>
+  <url>
+    <loc>https://example.se/b</loc>
+    <news:news><news:publication_date>2026-06-19T00:00:00Z</news:publication_date></news:news>
+  </url>
+</urlset>"""
+        article_html = """<html><head><meta property="article:published_time" content="2026-06-20T10:00:00+02:00" /><title>Article A</title></head><body><article><p>Content</p></article></body></html>"""
+        responses = {
+            "https://example.se/sitemap.xml": xml,
+            "https://example.se/a": article_html,
+            "https://example.se/b": "<html><body><main><p>Other</p></main></body></html>",
+        }
+        client = _mock_client(responses)
+
+        with (
+            patch("daglas.context_fetcher.httpx.Client") as mock_client_cls,
+            patch.object(SiteThreadContext, "_load_seen_urls"),
+        ):
+            mock_client_cls.return_value.__enter__.return_value = client
+            ctx = SiteThreadContext(
+                source_config={
+                    "sitemap": "https://example.se/sitemap.xml",
+                    "name": "test",
+                },
+                store=pool,
+            )
+            ctx.run()
+            assert ctx.status == "COMPLETED"
+            assert pool.store_article.call_count == 2
+            stored_urls = [
+                call[0][0]["url"] for call in pool.store_article.call_args_list
+            ]
+            assert "https://example.se/a" in stored_urls
+            assert "https://example.se/b" in stored_urls

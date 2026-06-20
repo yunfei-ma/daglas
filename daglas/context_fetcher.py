@@ -95,7 +95,7 @@ class SiteThreadContext:
         try:
             self.seen.update(self.store.seen_urls(7))
         except Exception:
-            pass
+            logger.warning("Failed to load seen URLs from pool", exc_info=True)
 
     def _fetch_entries(self, client: httpx.Client) -> list[SitemapEntry] | None:
         _t0 = time.perf_counter()
@@ -157,18 +157,7 @@ class SiteThreadContext:
             article = _fetch_article(entry, client)
             if not article.title and entry.title:
                 article.title = entry.title
-            if not article.publish_date and entry.publish_date:
-                article.publish_date = entry.publish_date
-                logger.debug(
-                    "DATE_BACKFILL sitemap=%s url=%s",
-                    entry.publish_date,
-                    entry.url,
-                )
-            elif not article.publish_date and not entry.publish_date:
-                logger.warning(
-                    "DATE_MISSING no trafilatura date and no sitemap date url=%s",
-                    entry.url,
-                )
+            _backfill_article_date(article, entry)
             article.source = source_name
             self.store.store_article(article.__dict__)
             _elapsed = time.perf_counter() - _t0
@@ -231,17 +220,6 @@ def read_sitemap_entries(sitemap_url: str, client: httpx.Client) -> list[Sitemap
         if entry is not None:
             entries.append(entry)
     return entries
-
-
-def _strip_result_for_log(result: dict) -> dict:
-    """Return a copy of a trafilatura result dict with long text fields replaced by length."""
-    log = {}
-    for k, v in result.items():
-        if isinstance(v, str) and len(v) > 200:
-            log[k] = f"{len(v)} chars"
-        else:
-            log[k] = v
-    return log
 
 
 def _scan_html_for_date(html: str) -> str | None:
@@ -366,6 +344,21 @@ def _read_and_filter_sitemap(
     return entries
 
 
+def _backfill_article_date(article: Article, entry: SitemapEntry) -> None:
+    if not article.publish_date and entry.publish_date:
+        article.publish_date = entry.publish_date
+        logger.debug(
+            "DATE_BACKFILL sitemap=%s url=%s",
+            entry.publish_date,
+            entry.url,
+        )
+    elif not article.publish_date and not entry.publish_date:
+        logger.warning(
+            "DATE_MISSING no trafilatura date and no sitemap date url=%s",
+            entry.url,
+        )
+
+
 def _fetch_article(entry: SitemapEntry, client: httpx.Client) -> Article:
     resp = client.get(entry.url, timeout=30)
     resp.raise_for_status()
@@ -410,18 +403,7 @@ def fetch_context(
                     article = _fetch_article(entry, client)
                     if not article.title and entry.title:
                         article.title = entry.title
-                    if not article.publish_date and entry.publish_date:
-                        article.publish_date = entry.publish_date
-                        logger.debug(
-                            "DATE_BACKFILL sitemap=%s url=%s",
-                            entry.publish_date,
-                            entry.url,
-                        )
-                    elif not article.publish_date and not entry.publish_date:
-                        logger.warning(
-                            "DATE_MISSING no trafilatura date and no sitemap date url=%s",
-                            entry.url,
-                        )
+                    _backfill_article_date(article, entry)
                     article.source = source.get("name", _domain_from_url(entry.url))
                     articles.append(article)
                 except Exception as e:
