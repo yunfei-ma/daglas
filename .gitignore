@@ -4,5 +4,8 @@ __pycache__/
 AGENTS.md
 implementation_plan.md
 output/
+tasks/
+discover_out/
+data/
 
 .skills/
