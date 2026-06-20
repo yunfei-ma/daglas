@@ -33,10 +33,10 @@ class SitemapEntry:
 @dataclass
 class Article:
     publish_date: str | None = None
+    source: str = ""
     title: str = ""
     tags: list[str] = field(default_factory=list)
     body: str = ""
-    source: str = ""
     url: str = ""
 
 
@@ -82,7 +82,7 @@ class SiteThreadContext:
             entries = self._fetch_entries(client)
             if entries is None:
                 return
-            self._fetch_articles(entries, client)
+            self._fetch_all(entries, client)
 
         self.status = "COMPLETED"
         _elapsed = time.perf_counter() - _t0
@@ -127,7 +127,7 @@ class SiteThreadContext:
         entries.sort(key=_entry_sort_key, reverse=True)
         return entries
 
-    def _fetch_articles(
+    def _fetch_all(
         self, entries: list[SitemapEntry], client: httpx.Client
     ) -> None:
         source_name = self.source_config.get(
@@ -154,7 +154,7 @@ class SiteThreadContext:
     ) -> None:
         _t0 = time.perf_counter()
         try:
-            article = _fetch_article(entry, client)
+            article = _fetch_one(entry, client)
             if not article.title and entry.title:
                 article.title = entry.title
             _backfill_article_date(article, entry)
@@ -359,7 +359,7 @@ def _backfill_article_date(article: Article, entry: SitemapEntry) -> None:
         )
 
 
-def _fetch_article(entry: SitemapEntry, client: httpx.Client) -> Article:
+def _fetch_one(entry: SitemapEntry, client: httpx.Client) -> Article:
     resp = client.get(entry.url, timeout=30)
     resp.raise_for_status()
     return extract_article(entry.url, resp.text)
@@ -400,7 +400,7 @@ def fetch_context(
                     continue
                 seen.add(entry.url)
                 try:
-                    article = _fetch_article(entry, client)
+                    article = _fetch_one(entry, client)
                     if not article.title and entry.title:
                         article.title = entry.title
                     _backfill_article_date(article, entry)
