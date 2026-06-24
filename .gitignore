@@ -1,6 +1,7 @@
 config.yaml
 __pycache__/
 *.pyc
+*.egg-info/
 AGENTS.md
 implementation_plan.md
 output/

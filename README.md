@@ -65,7 +65,8 @@ graph LR
 ## Setup
 
 ```bash
-pip install -r requirements.txt
+# Install package and dependencies
+pip install -e .
 
 # Configure from template
 cp daglas/config_default.yaml config.yaml
@@ -76,16 +77,18 @@ cp daglas/config_default.yaml config.yaml
 
 ```bash
 # One-shot: fetch, generate, queue, exit
-python run.py --generate
+daglas --generate
 
 # Default: persistent daemon (IMAP polling + sender queue)
-python run.py
+daglas
+
+# Equivalent via module: python -m daglas.run
 ```
 
-`run.py` runs in **persistent mode** by default (stays alive, polls IMAP,
-dispatches queued emails). Pass `--generate` for a one-shot fetch-generate-queue
-cycle that exits when done. Set `DAGLAS_LOG_LEVEL=DEBUG` to see per-article
-fetch timing and date-tracing logs.
+Runs in **persistent mode** by default (stays alive, polls IMAP, dispatches
+queued emails). Pass `--generate` for a one-shot fetch-generate-queue cycle
+that exits when done. Set `DAGLAS_LOG_LEVEL=DEBUG` to see per-article fetch
+timing and date-tracing logs.
 
 ## launchd integration (macOS)
 
@@ -100,8 +103,8 @@ Two services:
 
 | Service | Mode | Behaviour |
 |---|---|---|
-| `com.daglas.lessonGenerator` | `StartInterval` 1800s | Fires `run.py --generate` every 30 min — generates and queues the daily lesson |
-| `com.daglas.runner` | `KeepAlive` + `RunAtLoad` | Keeps persistent mode alive (IMAP, sender queue), restarts on crash |
+| `com.daglas.lessonGenerator` | `StartInterval` 1800s | Fires `daglas --generate` via `python -m daglas.run --generate` every 30 min |
+| `com.daglas.runner` | `KeepAlive` + `RunAtLoad` | Runs `daglas` via `python -m daglas.run` persistently (IMAP, sender queue), restarts on crash |
 
 launchd tracks wall time even across sleep/wake cycles, so the daily
 lesson fires at the correct time even if the Mac was asleep.
@@ -183,20 +186,23 @@ sources:
 
 ```
 daglas/
-├── config.py                 # Config loading from config.yaml
-├── config_default.yaml       # Template with commented defaults
-├── context_fetcher.py        # Sitemap parsing, article extraction, daemon
-├── context_pool.py           # JSONL store for fetched articles
-├── email_sender.py           # SMTP dispatch (internal, used by EmailSenderQueue)
-├── email_sender_queue.py     # Background queue with immediate + scheduled dispatch
-├── email_receiver.py         # IMAP polling, raw email push
-├── email_queue.py            # Persistent namespaced JSONL queue
-├── email_processor.py        # Blind notification hub for incoming emails
-├── subscriber_store.py       # Flat-file subscription management
+├── __init__.py                # Package version
+├── run.py                     # CLI entry point (daglas command or python -m daglas.run)
+├── config.py                  # Config loading from config.yaml
+├── config_default.yaml        # Template with commented defaults
+├── context_fetcher.py         # Sitemap parsing, article extraction, daemon
+├── context_pool.py            # JSONL store for fetched articles
+├── email_sender.py            # SMTP dispatch (internal, used by EmailSenderQueue)
+├── email_sender_queue.py      # Background queue with immediate + scheduled dispatch
+├── email_receiver.py          # IMAP polling, raw email push
+├── email_queue.py             # Persistent namespaced JSONL queue
+├── email_processor.py         # Blind notification hub for incoming emails
+├── subscriber_store.py        # Flat-file subscription management
 └── lesson/
     ├── generator.py           # Prompt assembly, context truncation
     ├── formatter.py           # Email dataclass, markdown→HTML
     └── llm.py                 # Provider abstraction (ollama, mlx, llama.cpp)
+pyproject.toml                  # PEP 621 package config (version, deps, entry point)
 prompts/                       # Versioned LLM prompt templates
 scripts/
 ├── install_launchd.py         # Generate & load launchd plists
@@ -208,7 +214,6 @@ scripts/
 tests/                         # Mirrors daglas/ structure
 tasks/                         # Module design docs (read before coding)
 data/                          # Runtime data (JSONL, subscribers)
-run.py                         # CLI entry point
 ```
 
 ## Testing

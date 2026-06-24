@@ -10,7 +10,6 @@ from pathlib import Path
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 LOG_DIR = Path.home() / "Library" / "Logs" / "daglas"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RUN_PY = PROJECT_ROOT / "run.py"
 PYTHON_BIN = Path(sys.executable).resolve()
 
 LESSON_GENERATOR_LABEL = "com.daglas.lessonGenerator"
@@ -36,7 +35,7 @@ def _ensure_dirs() -> None:
 def _build_lesson_generator_plist() -> dict:
     return {
         "Label": LESSON_GENERATOR_LABEL,
-        "ProgramArguments": [str(PYTHON_BIN), str(RUN_PY), "--interval"],
+        "ProgramArguments": [str(PYTHON_BIN), "-m", "daglas.run", "--generate"],
         "StartInterval": 1800,
         "WorkingDirectory": str(PROJECT_ROOT),
         "StandardOutPath": str(LOG_DIR / "lesson_generator.log"),
@@ -48,7 +47,7 @@ def _build_lesson_generator_plist() -> dict:
 def _build_runner_plist() -> dict:
     return {
         "Label": RUNNER_LABEL,
-        "ProgramArguments": [str(PYTHON_BIN), str(RUN_PY)],
+        "ProgramArguments": [str(PYTHON_BIN), "-m", "daglas.run"],
         "RunAtLoad": True,
         "KeepAlive": True,
         "WorkingDirectory": str(PROJECT_ROOT),

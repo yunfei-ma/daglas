@@ -17,15 +17,16 @@ class TestLessonGeneratorPlist:
         plist = _build_lesson_generator_plist()
         assert plist["StartInterval"] == 1800
 
-    def test_program_arguments_include_interval(self):
+    def test_program_arguments_include_generate(self):
         plist = _build_lesson_generator_plist()
         args = plist["ProgramArguments"]
-        assert str(args[-1]) == "--interval"
+        assert str(args[-1]) == "--generate"
 
-    def test_program_arguments_include_run_py(self):
+    def test_program_arguments_use_module(self):
         plist = _build_lesson_generator_plist()
         args = plist["ProgramArguments"]
-        assert any("run.py" in str(a) for a in args)
+        assert "-m" in args
+        assert "daglas.run" in args
 
     def test_has_working_directory(self):
         plist = _build_lesson_generator_plist()
@@ -59,10 +60,11 @@ class TestRunnerPlist:
         plist = _build_runner_plist()
         assert plist["KeepAlive"] is True
 
-    def test_program_arguments_do_not_include_interval(self):
+    def test_program_arguments_use_module(self):
         plist = _build_runner_plist()
         args = plist["ProgramArguments"]
-        assert "--interval" not in args
+        assert "-m" in args
+        assert "daglas.run" in args
 
     def test_has_working_directory(self):
         plist = _build_runner_plist()
