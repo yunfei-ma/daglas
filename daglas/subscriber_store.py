@@ -40,10 +40,17 @@ WELCOME_TEXT = """Hi {name}!
 
 Welcome to Dagl\u00e4sa \u2014 your daily Swedish reading practice.
 
-Each morning you will receive a short Swedish news article or story with simple English explanations. This is not a grammar course \u2014 it is designed to help you build reading confidence by engaging with real Swedish content every day.
+How it works:
+
+\u2022 Each morning I scan news from {source_count} Swedish sources:
+  {source_list}
+\u2022 From all articles, I pick the most relevant one for your lesson.
+\u2022 Articles are collected at {fetch_time}.
+\u2022 Your lesson is created and delivered at {send_time}.
+
+Each lesson includes the Swedish article text with simple English translations, key vocabulary, grammar breakdowns, and pronunciation guides.
 
 You will receive your first lesson at {send_time} tomorrow.
-Lessons arrive daily at {send_time}.
 
 ---
 
@@ -51,10 +58,17 @@ Hej {name}!
 
 V\u00e4lkommen till Dagl\u00e4sa \u2014 din dagliga svenska l\u00e4str\u00e4ning.
 
-Varje morgon f\u00e5r du en kort svensk nyhetsartikel eller ber\u00e4ttelse med enkla engelska f\u00f6rklaringar. Det h\u00e4r \u00e4r ingen grammatikkurs \u2014 det \u00e4r utformat f\u00f6r att hj\u00e4lpa dig bygga l\u00e4sf\u00f6rst\u00e5else genom att ta del av verklig svensk text varje dag.
+S\u00e5 h\u00e4r fungerar det:
 
-Du f\u00e5r din f\u00f6rsta lektion klockan {send_time} i morgon.
-Lektionerna kommer varje dag klockan {send_time}.
+\u2022 Varje morgon skannar jag nyheter fr\u00e5n {source_count} svenska k\u00e4llor:
+  {source_list}
+\u2022 Fr\u00e5n alla artiklar v\u00e4ljer jag den mest relevanta f\u00f6r din lektion.
+\u2022 Artiklar samlas in kl. {fetch_time}.
+\u2022 Din lektion skapas och levereras kl. {send_time}.
+
+Varje lektion inneh\u00e5ller den svenska artikeltexten med enkla engelska \u00f6vers\u00e4ttningar, viktiga ord, grammatikgenomg\u00e5ng och uttalsguide.
+
+Du f\u00e5r din f\u00f6rsta lektion kl. {send_time} i morgon.
 
 Hej d\u00e5!
 Dagl\u00e4sateamet"""
@@ -105,29 +119,53 @@ class SubscriberStore:
         self._sender_queue = sender_queue
         self._llm = llm
 
-        send_time = (
-            daglas.config.config.send_time
-            if daglas.config.config is not None
-            else "07:00"
+        cfg = daglas.config.config
+        send_time = cfg.send_time if cfg is not None else "07:00"
+        fetch_time = cfg.fetch_time if cfg is not None else "06:00"
+
+        sources = cfg.sources if cfg is not None else []
+        source_count = len(sources)
+        source_list = "\n  ".join(
+            s.get("name", "?") for s in sources
         )
 
         if welcome_template is not None:
             self._welcome_template = welcome_template
         else:
             self._welcome_template = self._build_email(
-                WELCOME_SUBJECT, WELCOME_TEXT, send_time
+                WELCOME_SUBJECT, WELCOME_TEXT,
+                send_time=send_time,
+                fetch_time=fetch_time,
+                source_count=str(source_count),
+                source_list=source_list,
             )
 
         if unsubscribe_template is not None:
             self._unsubscribe_template = unsubscribe_template
         else:
             self._unsubscribe_template = self._build_email(
-                UNSUBSCRIBE_SUBJECT, UNSUBSCRIBE_TEXT, send_time
+                UNSUBSCRIBE_SUBJECT, UNSUBSCRIBE_TEXT,
+                send_time=send_time,
             )
 
     @staticmethod
-    def _build_email(subject: str, text_template: str, send_time: str) -> Email:
-        text_body = text_template.replace("{send_time}", send_time)
+    def _build_email(
+        subject: str,
+        text_template: str,
+        send_time: str = "",
+        fetch_time: str = "",
+        source_count: str = "",
+        source_list: str = "",
+    ) -> Email:
+        replacements = {
+            "{send_time}": send_time,
+            "{fetch_time}": fetch_time,
+            "{source_count}": source_count,
+            "{source_list}": source_list,
+        }
+        text_body = text_template
+        for placeholder, value in replacements.items():
+            text_body = text_body.replace(placeholder, value)
         html_body = _text_to_html(text_body)
         return Email(subject=subject, text_body=text_body, html_body=html_body)
 
