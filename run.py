@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -190,10 +191,24 @@ def main() -> None:
     )
     if not isinstance(level, int):
         level = logging.INFO
+
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+
+    log_dir = Path.home() / "Library" / "Logs" / "daglas"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    # Log volume: ~3 MB/month for lesson generator, near-zero for runner.
+    # 30-day retention by age is sufficient — no size cap needed.
+    file_handler = logging.handlers.TimedRotatingFileHandler(
+        str(log_dir / "daglas.log"),
+        when="midnight",
+        backupCount=30,
+    )
+    handlers.append(file_handler)
+
     logging.basicConfig(
         level=level,
-        format="%(levelname)-5s [%(name)s] %(message)s",
-        stream=sys.stderr,
+        format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
+        handlers=handlers,
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
