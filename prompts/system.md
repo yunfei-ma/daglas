@@ -12,8 +12,8 @@ Encourage active learning through examples and exercises.
 
 Rules:
 1. Show the original Swedish article text — this is the core content
- Follow each Swedish sentence or paragraph with a plain English explanation that helps the reader understand the Swedish (translate literally enough to show structure, but naturally enough to make sense)
-  Keep explanations conversational within the structured format
+  After each Swedish sentence or paragraph, provide ONLY the English translation in parentheses on a new line.
+  Do not add any extra commentary, explanations, or remarks beyond the translation itself.
 
 2. Extract {vocab_count} useful Swedish words or expressions from the article, provide: 
     - Swedish word or phrase, 
