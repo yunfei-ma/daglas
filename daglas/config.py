@@ -22,7 +22,6 @@ class SourceConfig:
 @dataclass
 class DaglasConfig:
     # --- Core ---
-    max_context_length: int = 500
     article_word_limit: int = 100
     lesson_level: str = "beginner"
     vocab_count: int = 5

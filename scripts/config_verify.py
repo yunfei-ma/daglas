@@ -24,7 +24,6 @@ def main() -> int:
     print(
         f"\nDaglasConfig fields ({len([f for f in dir(cfg) if not f.startswith('_')])}):"
     )
-    print(f"  max_context_length             = {cfg.max_context_length}")
     print(f"  article_word_limit             = {cfg.article_word_limit}")
     print(f"  lesson_level                   = {cfg.lesson_level!r}")
     print(f"  vocab_count                    = {cfg.vocab_count}")

@@ -117,7 +117,6 @@ All settings in `config.yaml` (copy from `daglas/config_default.yaml`).
 | `llm_endpoint` | `""` | LLM API endpoint (e.g. `http://localhost:11434/v1`) |
 | `llm_model` | `""` | Model name (e.g. `gemma4:latest`) |
 | `llm_api_key` | `""` | API key if required |
-| `max_context_length` | `500` | Max characters for article context sent to LLM |
 | `article_word_limit` | `100` | Word limit per article displayed in lesson |
 | `lesson_level` | `beginner` | Target difficulty for generated lesson |
 | `vocab_count` | `5` | Vocabulary words per lesson |

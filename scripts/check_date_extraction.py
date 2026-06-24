@@ -32,9 +32,7 @@ def scan_html_date_indicators(soup: BeautifulSoup) -> None:
             f"  <meta property='article:published_time'> content={meta.get('content')}"
         )
     for meta in soup.find_all("meta", attrs={"name": "date"}):
-        indicators.append(
-            f"  <meta name='date'> content={meta.get('content')}"
-        )
+        indicators.append(f"  <meta name='date'> content={meta.get('content')}")
     for meta in soup.find_all("meta", attrs={"itemprop": "datePublished"}):
         indicators.append(
             f"  <meta itemprop='datePublished'> content={meta.get('content')}"
@@ -89,7 +87,13 @@ def main() -> int:
     print()
 
     print("=== Trafilatura extraction ===")
-    raw = trafilatura.extract(html, output_format="json", include_images=False, include_comments=False, with_metadata=True)
+    raw = trafilatura.extract(
+        html,
+        output_format="json",
+        include_images=False,
+        include_comments=False,
+        with_metadata=True,
+    )
     if raw:
         result = json.loads(raw)
         for field in ("title", "date", "author", "language", "description"):

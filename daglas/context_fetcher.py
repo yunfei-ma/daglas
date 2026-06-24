@@ -127,9 +127,7 @@ class SiteThreadContext:
         entries.sort(key=_entry_sort_key, reverse=True)
         return entries
 
-    def _fetch_all(
-        self, entries: list[SitemapEntry], client: httpx.Client
-    ) -> None:
+    def _fetch_all(self, entries: list[SitemapEntry], client: httpx.Client) -> None:
         source_name = self.source_config.get(
             "name", _domain_from_url(self.source_config["sitemap"])
         )
