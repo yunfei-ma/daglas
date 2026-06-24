@@ -113,13 +113,22 @@ def _run_generate() -> None:
         print("No articles in context pool.")
         sys.exit(1)
 
+    best = max(articles, key=lambda a: a.get("score") or 0)
+    out_dir = Path("output")
+    out_dir.mkdir(exist_ok=True)
+    sel_path = out_dir / "selected.txt"
+    sel_path.write_text(
+        f"Title: {best.get('title', '')}\nURL: {best.get('url', '')}\n\n{best.get('body', '')}"
+    )
+    print(f"Selected article: {best.get('title', '')[:70]}")
+
     provider = create_provider(
         endpoint=cfg.llm_endpoint,
         model=cfg.llm_model,
         api_key=cfg.llm_api_key,
     )
 
-    lesson_text = generate_lesson(provider, articles)
+    lesson_text = generate_lesson(provider, [best])
 
     if not lesson_text:
         print("ERROR: lesson generation returned empty result")
@@ -127,8 +136,6 @@ def _run_generate() -> None:
 
     email = format_email(lesson_text)
 
-    out_dir = Path("output")
-    out_dir.mkdir(exist_ok=True)
     md_path = out_dir / "lesson.md"
     md_path.write_text(email.text_body)
     print(f"Saved to {md_path}")

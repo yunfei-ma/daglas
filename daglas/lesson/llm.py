@@ -36,7 +36,7 @@ class OllamaProvider:
             f"{self.endpoint}/chat/completions",
             headers=headers,
             json=body,
-            timeout=120,
+            timeout=300,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -68,10 +68,10 @@ class MlxProvider:
         }
 
         resp = httpx.post(
-            f"{self.endpoint}/v1/chat/completions",
+            f"{self.endpoint}/chat/completions",
             headers=headers,
             json=body,
-            timeout=120,
+            timeout=300,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -106,7 +106,7 @@ class LlamaCppProvider:
             f"{self.endpoint}/chat/completions",
             headers=headers,
             json=body,
-            timeout=120,
+            timeout=300,
         )
         resp.raise_for_status()
         data = resp.json()
