@@ -1,3 +1,4 @@
+import logging
 import smtplib
 from dataclasses import dataclass, field
 from email.mime.multipart import MIMEMultipart
@@ -5,6 +6,8 @@ from email.mime.text import MIMEText
 
 import daglas.config
 from daglas.lesson.formatter import Email
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,18 +52,31 @@ class SmtpSender:
     ) -> SendResult:
         result = SendResult()
         if not recipients or not self.from_address:
+            logger.warning("No recipients or from_address — skipping send")
             return result
         if dry_run:
-            print(
-                f"[dry-run] Would send '{email.subject}' to {len(recipients)} recipient(s)"
+            logger.info(
+                "Dry-run: would send %r to %d recipient(s)",
+                email.subject,
+                len(recipients),
             )
             return result
+        logger.info(
+            "Sending %r to %d recipient(s) via %s:%d",
+            email.subject,
+            len(recipients),
+            self.host,
+            self.port,
+        )
         try:
             conn = smtplib.SMTP(self.host, self.port, timeout=30)
             conn.starttls()
+            logger.info("SMTP connected and TLS started")
             if self.user:
                 conn.login(self.user, self.password)
+                logger.info("SMTP authenticated as %s", self.user)
         except Exception as e:
+            logger.error("SMTP connection failed: %s", e)
             result.failure_count = len(recipients)
             result.errors.append(f"SMTP connection failed: {e}")
             return result
@@ -70,10 +86,18 @@ class SmtpSender:
                 conn.sendmail(self.from_address, [recipient], raw)
                 result.success_count += 1
             except Exception as e:
+                logger.error("Failed to send to %s: %s", recipient, e)
                 result.failure_count += 1
                 result.errors.append(f"Failed to send to {recipient}: {e}")
         try:
             conn.quit()
+            logger.info("SMTP disconnected")
         except Exception:
             pass
+        logger.info(
+            "Send complete: subject=%r ok=%d failed=%d",
+            email.subject,
+            result.success_count,
+            result.failure_count,
+        )
         return result

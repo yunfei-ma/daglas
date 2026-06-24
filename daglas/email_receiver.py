@@ -94,6 +94,7 @@ class EmailReceiver:
         return True
 
     def check_once(self) -> int:
+        logger.info("Checking for new email...")
         count = 0
         try:
             conn = self._connect()
