@@ -5,6 +5,7 @@ import logging
 import logging.handlers
 import os
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -29,13 +30,7 @@ def _wire_email_receiver(cfg, sender_queue):
     store = SubscriberStore(sender_queue=sender_queue)
     processor.add_listener(store.handle_email)
 
-    receiver = EmailReceiver(
-        queue,
-        imap_host=cfg.imap_host,
-        imap_port=cfg.imap_port,
-        imap_user=cfg.imap_user,
-        imap_password=cfg.imap_password,
-    )
+    receiver = EmailReceiver(queue)
     return receiver
 
 
@@ -157,18 +152,10 @@ def _run_persistent() -> None:
         receiver = _wire_email_receiver(cfg, sender_queue)
         receiver.start()
 
-    print("Dagläs running. Press Ctrl+C or type q+Enter to quit.")
+    _shutdown_event = threading.Event()
+    print("Dagläs running. Press Ctrl+C to quit.")
     try:
-        while True:
-            try:
-                line = input()
-                if line.strip().lower() == "q":
-                    print("Shutting down...")
-                    break
-            except EOFError:
-                break
-            except KeyboardInterrupt:
-                break
+        _shutdown_event.wait()
     except KeyboardInterrupt:
         print("\nShutting down...")
 

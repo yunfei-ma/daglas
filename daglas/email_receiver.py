@@ -14,28 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 class EmailReceiver:
-    def __init__(
-        self,
-        queue,
-        *,
-        imap_host: str = "",
-        imap_port: int = 993,
-        imap_user: str = "",
-        imap_password: str = "",
-        poll_interval: int = 300,
-    ):
+    def __init__(self, queue):
         self._queue = queue
         cfg = daglas.config.config
 
-        self._imap_host = imap_host or (cfg.imap_host if cfg else "")
-        self._imap_port = imap_port or (cfg.imap_port if cfg else 993)
-        self._imap_user = imap_user or (cfg.imap_user if cfg else "")
-        self._imap_password = imap_password or (cfg.imap_password if cfg else "")
-        self._poll_interval = (
-            poll_interval
-            if poll_interval != 300
-            else (cfg.email_receiver_poll_interval if cfg else 300)
-        )
+        self._imap_host = cfg.imap_host if cfg else ""
+        self._imap_port = cfg.imap_port if cfg else 993
+        self._imap_user = cfg.imap_user if cfg else ""
+        self._imap_password = cfg.imap_password if cfg else ""
+        self._poll_interval = cfg.email_receiver_poll_interval if cfg else 300
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 

@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import daglas.config as daglas_config
 from daglas.email_receiver import EmailReceiver
 
 
@@ -134,7 +135,9 @@ class TestCheckOnce:
 class TestRunLoop:
     def test_run_loop_interval_timing(self, tmp_path):
         queue = MagicMock()
-        receiver = EmailReceiver(queue, poll_interval=0.02)
+        mock_cfg = MagicMock(email_receiver_poll_interval=0.02)
+        with patch.object(daglas_config, "config", mock_cfg):
+            receiver = EmailReceiver(queue)
 
         with (
             patch.object(receiver, "_connect", lambda: MockIMAP()),
@@ -148,7 +151,9 @@ class TestRunLoop:
 
     def test_run_loop_no_sleep_when_poll_exceeds_interval(self, tmp_path):
         queue = MagicMock()
-        receiver = EmailReceiver(queue, poll_interval=0.01)
+        mock_cfg = MagicMock(email_receiver_poll_interval=0.01)
+        with patch.object(daglas_config, "config", mock_cfg):
+            receiver = EmailReceiver(queue)
 
         elapsed_seconds = 100.0
         monotonic_values = [0.0, elapsed_seconds, elapsed_seconds, elapsed_seconds]
@@ -174,7 +179,7 @@ class TestRunLoop:
 class TestLifecycle:
     def test_is_running_after_start(self):
         queue = MagicMock()
-        receiver = EmailReceiver(queue, poll_interval=300)
+        receiver = EmailReceiver(queue)
 
         with patch.object(receiver, "_connect", lambda: MockIMAP()):
             receiver.start()
@@ -183,7 +188,7 @@ class TestLifecycle:
 
     def test_stop_clears_is_running(self):
         queue = MagicMock()
-        receiver = EmailReceiver(queue, poll_interval=300)
+        receiver = EmailReceiver(queue)
 
         with patch.object(receiver, "_connect", lambda: MockIMAP()):
             receiver.start()
@@ -193,7 +198,7 @@ class TestLifecycle:
 
     def test_start_idempotent(self):
         queue = MagicMock()
-        receiver = EmailReceiver(queue, poll_interval=300)
+        receiver = EmailReceiver(queue)
 
         with (
             patch.object(receiver, "_connect", lambda: MockIMAP()),
@@ -213,7 +218,9 @@ class TestLifecycle:
 
     def test_run_loop_obeys_stop_event(self):
         queue = MagicMock()
-        receiver = EmailReceiver(queue, poll_interval=0.01)
+        mock_cfg = MagicMock(email_receiver_poll_interval=0.01)
+        with patch.object(daglas_config, "config", mock_cfg):
+            receiver = EmailReceiver(queue)
 
         with patch.object(receiver, "_connect", lambda: MockIMAP()):
             receiver.start()
