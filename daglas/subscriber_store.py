@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
+import tempfile
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import daglas.config
@@ -10,6 +14,34 @@ from daglas.lesson.llm import LlmProvider
 from daglas.user_note_store import UserNoteStore
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Subscriber:
+    email: str
+    name: str = ""
+    level: str = ""
+    joined_at: str = ""
+    vocab_count: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "email": self.email,
+            "name": self.name,
+            "level": self.level,
+            "joined_at": self.joined_at,
+            "vocab_count": self.vocab_count,
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> Subscriber:
+        return Subscriber(
+            email=data.get("email", ""),
+            name=data.get("name", ""),
+            level=data.get("level", ""),
+            joined_at=data.get("joined_at", ""),
+            vocab_count=data.get("vocab_count", 0),
+        )
 
 
 def _read_prompt(name: str) -> str:
@@ -112,14 +144,16 @@ class SubscriberStore:
             self._path = Path(path)
         elif daglas.config.config is not None:
             data_dir = Path(daglas.config.config.data_dir)
-            self._path = data_dir / "subscribers.txt"
+            self._path = data_dir / "subscribers.jsonl"
         else:
-            self._path = Path("data") / "subscribers.txt"
+            self._path = Path("data") / "subscribers.jsonl"
 
         self._data_dir = self._path.parent
         self._sender_queue = sender_queue
         self._llm = llm
         self._notes = notes or UserNoteStore(self._data_dir)
+
+        self._migrate_from_txt()
 
         cfg = daglas.config.config
         send_time = cfg.send_time if cfg is not None else "07:00"
@@ -150,6 +184,22 @@ class SubscriberStore:
                 send_time=send_time,
             )
 
+    def _migrate_from_txt(self) -> None:
+        jsonl_path = self._path
+        legacy_path = jsonl_path.with_suffix(".txt")
+        if jsonl_path.is_file():
+            return
+        if not legacy_path.is_file():
+            return
+        logger.info("Migrating %s to %s", legacy_path.name, jsonl_path.name)
+        lines = legacy_path.read_text().splitlines()
+        emails = [line.strip() for line in lines if line.strip()]
+        mtime = datetime.fromtimestamp(legacy_path.stat().st_mtime).isoformat()
+        subs = [Subscriber(email=email, joined_at=mtime) for email in emails]
+        self._write_all(subs)
+        legacy_path.unlink()
+        logger.info("Migrated %d subscribers from legacy file", len(subs))
+
     @staticmethod
     def _build_email(
         subject: str,
@@ -171,28 +221,76 @@ class SubscriberStore:
         html_body = _text_to_html(text_body)
         return Email(subject=subject, text_body=text_body, html_body=html_body)
 
-    def _read_all(self) -> list[str]:
+    def _read_all(self) -> list[Subscriber]:
         if not self._path.is_file():
             return []
-        lines = self._path.read_text().splitlines()
-        return [line.strip() for line in lines if line.strip()]
+        result: list[Subscriber] = []
+        for line in self._path.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                result.append(Subscriber.from_dict(data))
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed JSONL line: %s", line[:80])
+        return result
 
-    def _write_all(self, lines: list[str]) -> None:
+    def _write_all(self, subscribers: list[Subscriber]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text("\n".join(lines) + "\n")
+        lines = "\n".join(
+            json.dumps(s.to_dict(), ensure_ascii=False) for s in subscribers
+        )
+        lines += "\n"
+        fd, tmp = tempfile.mkstemp(
+            dir=self._path.parent, prefix="subscribers_", suffix=".jsonl"
+        )
+        try:
+            with open(fd, "w") as f:
+                f.write(lines)
+            tmp_path = Path(tmp)
+            tmp_path.replace(self._path)
+        except Exception:
+            Path(tmp).unlink(missing_ok=True)
+            raise
 
-    def list(self) -> list[str]:
+    def list(self) -> list[Subscriber]:
         return self._read_all()
 
-    def add(self, email: str) -> None:
+    def get(self, email: str) -> Subscriber | None:
         email = email.strip()
-        if not email:
-            return
+        for sub in self._read_all():
+            if sub.email == email:
+                return sub
+        return None
+
+    def add(
+        self,
+        email: str,
+        name: str = "",
+        level: str = "",
+        vocab_count: int = 0,
+    ) -> Subscriber:
+        email = email.strip()
         current = self._read_all()
-        if email in current:
-            return
-        current.append(email)
+        existing = next((s for s in current if s.email == email), None)
+        now = datetime.now().isoformat()
+        if existing:
+            existing.name = name or existing.name
+            existing.level = level or existing.level
+            existing.vocab_count = vocab_count or existing.vocab_count
+            self._write_all(current)
+            return existing
+        sub = Subscriber(
+            email=email,
+            name=name,
+            level=level,
+            joined_at=now,
+            vocab_count=vocab_count,
+        )
+        current.append(sub)
         self._write_all(current)
+        return sub
 
     def remove(self, email: str) -> None:
         email = email.strip()
@@ -201,10 +299,25 @@ class SubscriberStore:
         if not self._path.is_file():
             return
         current = self._read_all()
-        if email not in current:
+        filtered = [s for s in current if s.email != email]
+        if len(filtered) == len(current):
             return
-        current = [e for e in current if e != email]
-        self._write_all(current)
+        self._write_all(filtered)
+
+    def update(self, email: str, **kwargs) -> Subscriber | None:
+        email = email.strip()
+        current = self._read_all()
+        for sub in current:
+            if sub.email == email:
+                if "name" in kwargs:
+                    sub.name = kwargs["name"]
+                if "level" in kwargs:
+                    sub.level = kwargs["level"]
+                if "vocab_count" in kwargs:
+                    sub.vocab_count = kwargs["vocab_count"]
+                self._write_all(current)
+                return sub
+        return None
 
     def _extract_user_name(self, subject: str, body: str, sender: str) -> str:
         if self._llm is None:
@@ -250,8 +363,8 @@ class SubscriberStore:
             self._send_confirmation(sender, "unsubscribe", user_name)
             logger.info("Action: UNSUBSCRIBE sender=%s name=%s", sender, user_name)
         elif "subscribe" in text:
-            self.add(sender)
             user_name = self._extract_user_name(subject, body, sender)
+            self.add(sender, name=user_name)
             self._notes.save_received(sender, body, user_name)
             self._send_confirmation(sender, "subscribe", user_name)
             logger.info("Action: SUBSCRIBE sender=%s name=%s", sender, user_name)

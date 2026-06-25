@@ -34,20 +34,25 @@ class SmtpSender:
         self.from_address = from_address or (cfg.from_address if cfg else "")
 
     @staticmethod
-    def _build_message(email: Email, from_addr: str, to_addr: str) -> str:
+    def _build_message(email: Email, from_addr: str) -> str:
         msg = MIMEMultipart("alternative")
         msg["From"] = from_addr
-        msg["To"] = to_addr
+        msg["To"] = "undisclosed-recipients: ;"
         msg["Subject"] = email.subject
         msg.attach(MIMEText(email.text_body, "plain", "utf-8"))
         msg.attach(MIMEText(email.html_body, "html", "utf-8"))
         return msg.as_string()
+
+    @staticmethod
+    def _chunks(items: list[str], size: int) -> list[list[str]]:
+        return [items[i : i + size] for i in range(0, len(items), size)]
 
     def send(
         self,
         email: Email,
         recipients: list[str],
         *,
+        batch_size: int = 0,
         dry_run: bool = False,
     ) -> SendResult:
         result = SendResult()
@@ -80,15 +85,31 @@ class SmtpSender:
             result.failure_count = len(recipients)
             result.errors.append(f"SMTP connection failed: {e}")
             return result
-        for recipient in recipients:
+
+        raw = self._build_message(email, self.from_address)
+        batches = (
+            self._chunks(recipients, batch_size) if batch_size > 0 else [recipients]
+        )
+        for batch in batches:
             try:
-                raw = self._build_message(email, self.from_address, recipient)
-                conn.sendmail(self.from_address, [recipient], raw)
-                result.success_count += 1
+                failures = conn.sendmail(self.from_address, batch, raw)
+                if failures:
+                    successful = len(batch) - len(failures)
+                    result.success_count += successful
+                    for addr, err in failures.items():
+                        logger.error("Failed to send to %s: %s", addr, err)
+                        result.failure_count += 1
+                        result.errors.append(f"Failed to send to {addr}: {err}")
+                else:
+                    result.success_count += len(batch)
+            except smtplib.SMTPRecipientsRefused as e:
+                logger.error("Batch entirely refused: %s", e)
+                result.failure_count += len(batch)
+                result.errors.append(f"Batch entirely refused: {e}")
             except Exception as e:
-                logger.error("Failed to send to %s: %s", recipient, e)
-                result.failure_count += 1
-                result.errors.append(f"Failed to send to {recipient}: {e}")
+                logger.error("Batch send failed: %s", e)
+                result.failure_count += len(batch)
+                result.errors.append(f"Batch send failed: {e}")
         try:
             conn.quit()
             logger.info("SMTP disconnected")

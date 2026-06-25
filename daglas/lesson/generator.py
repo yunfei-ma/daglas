@@ -18,6 +18,8 @@ def generate_lesson(
     provider,
     context_articles: list[dict],
     *,
+    level: str | None = None,
+    vocab_count: int | None = None,
     dry_run: bool = False,
 ) -> str | None:
     cfg = daglas.config.config
@@ -31,14 +33,14 @@ def generate_lesson(
         )
     raw_context = "\n\n---\n\n".join(context_parts)
 
-    level = cfg.lesson_level if cfg is not None else "beginner"
-    vcount = cfg.vocab_count if cfg is not None else 5
+    effective_level = level if level else (cfg.lesson_level if cfg else "beginner")
+    effective_vcount = vocab_count if vocab_count else (cfg.vocab_count if cfg else 5)
     word_limit = cfg.article_word_limit if cfg is not None else 100
-    system_prompt = system_template.format(vocab_count=vcount)
+    system_prompt = system_template.format(vocab_count=effective_vcount)
     user_prompt = user_template.format(
         context=raw_context,
-        level=level,
-        vocab_count=vcount,
+        level=effective_level,
+        vocab_count=effective_vcount,
         article_word_limit=word_limit,
     )
 

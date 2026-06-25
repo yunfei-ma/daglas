@@ -6,6 +6,7 @@ import logging.handlers
 import os
 import sys
 import threading
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from daglas.config import load_config
 from daglas.context_fetcher import fetch_context
 from daglas.context_pool import ContextPool
 from daglas.email_sender_queue import EmailSenderQueue, MailItem
-from daglas.lesson.formatter import Email, format_email
+from daglas.lesson.formatter import format_email
 from daglas.lesson.generator import generate_lesson
 from daglas.lesson.llm import create_provider
 from daglas.subscriber_store import SubscriberStore
@@ -52,29 +53,60 @@ def _resolve_send_time(time_str: str) -> str:
         return "immediate"
 
 
-def _queue_lesson(lesson: Email, send_at: str, sender_queue: EmailSenderQueue) -> None:
+def _queue_lessons(
+    provider,
+    articles: list[dict],
+    send_at: str,
+    sender_queue: EmailSenderQueue,
+) -> None:
+    cfg = daglas_config.config
     store = SubscriberStore()
-    recipients = store.list()
-    if not recipients:
+    subscribers = store.list()
+    if not subscribers:
         print("No subscribers — skipping lesson dispatch.")
         return
+
     resolved = _resolve_send_time(send_at)
-    sender_queue.push(
-        MailItem(
-            to=recipients,
-            subject=lesson.subject,
-            text_body=lesson.text_body,
-            html_body=lesson.html_body,
-            send_at=resolved,
-        )
-    )
+
+    groups: dict[tuple[str, int], list[str]] = defaultdict(list)
+    for sub in subscribers:
+        group_level = sub.level or (cfg.lesson_level if cfg else "beginner")
+        group_vcount = sub.vocab_count or (cfg.vocab_count if cfg else 5)
+        groups[(group_level, group_vcount)].append(sub.email)
+
     logger = logging.getLogger("run")
-    logger.info(
-        "Lesson queued: subject=%s recipients=%d send_at=%s",
-        lesson.subject,
-        len(recipients),
-        resolved,
-    )
+    for (group_level, group_vcount), emails in groups.items():
+        lesson_text = generate_lesson(
+            provider,
+            articles,
+            level=group_level,
+            vocab_count=group_vcount,
+        )
+        if not lesson_text:
+            logger.error(
+                "Lesson generation returned empty for group level=%s vcount=%d",
+                group_level,
+                group_vcount,
+            )
+            continue
+
+        email = format_email(lesson_text)
+        sender_queue.push(
+            MailItem(
+                to=emails,
+                subject=email.subject,
+                text_body=email.text_body,
+                html_body=email.html_body,
+                send_at=resolved,
+            )
+        )
+        logger.info(
+            "Lesson queued: group=(level=%s vcount=%d) recipients=%d send_at=%s",
+            group_level,
+            group_vcount,
+            len(emails),
+            resolved,
+        )
 
 
 def _run_generate() -> None:
@@ -124,20 +156,53 @@ def _run_generate() -> None:
         api_key=cfg.llm_api_key,
     )
 
-    lesson_text = generate_lesson(provider, [best])
-
-    if not lesson_text:
-        print("ERROR: lesson generation returned empty result")
-        sys.exit(1)
-
-    email = format_email(lesson_text)
-
     md_path = out_dir / "lesson.md"
-    md_path.write_text(email.text_body)
-    print(f"Saved to {md_path}")
+    first_group = True
+    store = SubscriberStore()
+    subscribers = store.list()
+    if not subscribers:
+        print("No subscribers — skipping lesson dispatch.")
+        sender_queue.stop()
+        return
 
-    _queue_lesson(email, cfg.send_time, sender_queue)
-    print("Lesson queued for scheduled dispatch.")
+    groups: dict[tuple[str, int], list[str]] = defaultdict(list)
+    for sub in subscribers:
+        group_level = sub.level or (cfg.lesson_level if cfg else "beginner")
+        group_vcount = sub.vocab_count or (cfg.vocab_count if cfg else 5)
+        groups[(group_level, group_vcount)].append(sub.email)
+
+    resolved = _resolve_send_time(cfg.send_time)
+    for (group_level, group_vcount), emails in groups.items():
+        lesson_text = generate_lesson(
+            provider,
+            [best],
+            level=group_level,
+            vocab_count=group_vcount,
+        )
+        if not lesson_text:
+            print("ERROR: lesson generation returned empty result")
+            continue
+
+        email = format_email(lesson_text)
+
+        if first_group:
+            md_path.write_text(email.text_body)
+            print(f"Saved to {md_path}")
+            first_group = False
+
+        sender_queue.push(
+            MailItem(
+                to=emails,
+                subject=email.subject,
+                text_body=email.text_body,
+                html_body=email.html_body,
+                send_at=resolved,
+            )
+        )
+        print(
+            f"Lesson queued for group (level={group_level} vcount={group_vcount}): "
+            f"{len(emails)} recipient(s)"
+        )
 
     sender_queue.stop()
 
@@ -183,8 +248,6 @@ def main() -> None:
 
     log_dir = Path.home() / "Library" / "Logs" / "daglas"
     log_dir.mkdir(parents=True, exist_ok=True)
-    # Log volume: ~3 MB/month for lesson generator, near-zero for runner.
-    # 30-day retention by age is sufficient — no size cap needed.
     file_handler = logging.handlers.TimedRotatingFileHandler(
         str(log_dir / "daglas.log"),
         when="midnight",
