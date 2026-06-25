@@ -8,13 +8,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from daglas import config as daglas_config
 from daglas.config import load_config
-from daglas.email_sender_queue import EmailSenderQueue, SendRequest
+from daglas.email_sender_queue import EmailSenderQueue, MailItem
 from daglas.subscriber_store import SubscriberStore
 
 
 def main() -> int:
     daglas_config.config = load_config()
-    cfg = daglas_config.config
 
     sender_queue = EmailSenderQueue()
     sender_queue.start()
@@ -34,10 +33,10 @@ def main() -> int:
         text_body = template.text_body.replace("{name}", name)
         html_body = template.html_body.replace("{name}", name)
         sender_queue.push(
-            SendRequest(
+            MailItem(
                 to=[email],
                 subject=template.subject,
-                body=text_body,
+                text_body=text_body,
                 html_body=html_body,
                 send_at="immediate",
             )

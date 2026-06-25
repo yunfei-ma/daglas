@@ -171,9 +171,11 @@ sources:
 ### Sender queue
 
 | Key | Default | Description |
-|---|---|---|
-| `email_sender_queue_immediate_interval` | `20` | Poll interval (s) for immediate queue |
-| `email_sender_queue_scheduled_interval` | `300` | Poll interval (s) for scheduled queue |
+|---|---|---|---|
+| `email_sender_immediate_success_backoff` | `5` | Backoff (s) after successful immediate send |
+| `email_sender_immediate_empty_interval` | `20` | Poll interval (s) when immediate queue is empty |
+| `email_sender_scheduled_success_backoff` | `5` | Backoff (s) after successful scheduled send |
+| `email_sender_scheduled_empty_interval` | `60` | Poll interval (s) when no scheduled items are due |
 
 ### Paths
 

@@ -38,10 +38,16 @@ def main() -> int:
     print(f"  imap_port                      = {cfg.imap_port}")
     print(f"  email_receiver_poll_interval   = {cfg.email_receiver_poll_interval}")
     print(
-        f"  email_sender_queue_immediate   = {cfg.email_sender_queue_immediate_interval}"
+        f"  email_sender_immediate_success_backoff = {cfg.email_sender_immediate_success_backoff}"
     )
     print(
-        f"  email_sender_queue_scheduled   = {cfg.email_sender_queue_scheduled_interval}"
+        f"  email_sender_immediate_empty_interval = {cfg.email_sender_immediate_empty_interval}"
+    )
+    print(
+        f"  email_sender_scheduled_success_backoff = {cfg.email_sender_scheduled_success_backoff}"
+    )
+    print(
+        f"  email_sender_scheduled_empty_interval = {cfg.email_sender_scheduled_empty_interval}"
     )
     print(f"  context_fetcher_poll_interval  = {cfg.context_fetcher_poll_interval}")
     print(f"  fetch_time                     = {cfg.fetch_time!r}")

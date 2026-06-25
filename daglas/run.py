@@ -13,7 +13,7 @@ from daglas import config as daglas_config
 from daglas.config import load_config
 from daglas.context_fetcher import fetch_context
 from daglas.context_pool import ContextPool
-from daglas.email_sender_queue import EmailSenderQueue, SendRequest
+from daglas.email_sender_queue import EmailSenderQueue, MailItem
 from daglas.lesson.formatter import Email, format_email
 from daglas.lesson.generator import generate_lesson
 from daglas.lesson.llm import create_provider
@@ -60,10 +60,10 @@ def _queue_lesson(lesson: Email, send_at: str, sender_queue: EmailSenderQueue) -
         return
     resolved = _resolve_send_time(send_at)
     sender_queue.push(
-        SendRequest(
+        MailItem(
             to=recipients,
             subject=lesson.subject,
-            body=lesson.text_body,
+            text_body=lesson.text_body,
             html_body=lesson.html_body,
             send_at=resolved,
         )

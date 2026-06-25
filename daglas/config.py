@@ -52,8 +52,10 @@ class DaglasConfig:
     email_receiver_poll_interval: int = 300
 
     # --- Email sender queue ---
-    email_sender_queue_immediate_interval: int = 20
-    email_sender_queue_scheduled_interval: int = 300
+    email_sender_immediate_success_backoff: int = 5
+    email_sender_immediate_empty_interval: int = 20
+    email_sender_scheduled_success_backoff: int = 5
+    email_sender_scheduled_empty_interval: int = 60
 
     # --- Scheduling ---
     fetch_time: str = "06:00"

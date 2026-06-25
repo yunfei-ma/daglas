@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 
 import daglas.config
-from daglas.email_sender_queue import EmailSenderQueue, SendRequest
+from daglas.email_sender_queue import EmailSenderQueue, MailItem
 from daglas.lesson.formatter import Email
 from daglas.lesson.llm import LlmProvider
+from daglas.user_note_store import UserNoteStore
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,7 @@ class SubscriberStore:
         path: str | None = None,
         sender_queue: EmailSenderQueue | None = None,
         llm: LlmProvider | None = None,
+        notes: UserNoteStore | None = None,
         welcome_template: Email | None = None,
         unsubscribe_template: Email | None = None,
     ):
@@ -118,6 +119,7 @@ class SubscriberStore:
         self._data_dir = self._path.parent
         self._sender_queue = sender_queue
         self._llm = llm
+        self._notes = notes or UserNoteStore(self._data_dir)
 
         cfg = daglas.config.config
         send_time = cfg.send_time if cfg is not None else "07:00"
@@ -125,15 +127,14 @@ class SubscriberStore:
 
         sources = cfg.sources if cfg is not None else []
         source_count = len(sources)
-        source_list = "\n  ".join(
-            s.get("name", "?") for s in sources
-        )
+        source_list = "\n  ".join(s.get("name", "?") for s in sources)
 
         if welcome_template is not None:
             self._welcome_template = welcome_template
         else:
             self._welcome_template = self._build_email(
-                WELCOME_SUBJECT, WELCOME_TEXT,
+                WELCOME_SUBJECT,
+                WELCOME_TEXT,
                 send_time=send_time,
                 fetch_time=fetch_time,
                 source_count=str(source_count),
@@ -144,7 +145,8 @@ class SubscriberStore:
             self._unsubscribe_template = unsubscribe_template
         else:
             self._unsubscribe_template = self._build_email(
-                UNSUBSCRIBE_SUBJECT, UNSUBSCRIBE_TEXT,
+                UNSUBSCRIBE_SUBJECT,
+                UNSUBSCRIBE_TEXT,
                 send_time=send_time,
             )
 
@@ -204,23 +206,6 @@ class SubscriberStore:
         current = [e for e in current if e != email]
         self._write_all(current)
 
-    @staticmethod
-    def _email_to_filename(email: str) -> str:
-        result = email.replace("@", "_").replace(".", "_")
-        unsafe = '/\\:*?"<>|'
-        for ch in unsafe:
-            result = result.replace(ch, "_")
-        return result
-
-    def _read_user_name(self, email: str) -> str | None:
-        note_path = self._data_dir / "notes" / f"{self._email_to_filename(email)}.txt"
-        if not note_path.is_file():
-            return None
-        for line in note_path.read_text().splitlines():
-            if line.startswith("Name: "):
-                return line[6:]
-        return None
-
     def _extract_user_name(self, subject: str, body: str, sender: str) -> str:
         if self._llm is None:
             return sender.split("@")[0].title()
@@ -231,21 +216,6 @@ class SubscriberStore:
         if not result or result.upper() == "NONE":
             return sender.split("@")[0].title()
         return result.title()
-
-    def _save_user_note(
-        self, email: str, body: str, user_name: str | None = None
-    ) -> None:
-        notes_dir = self._data_dir / "notes"
-        notes_dir.mkdir(parents=True, exist_ok=True)
-        note_path = notes_dir / f"{self._email_to_filename(email)}.txt"
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        entry = f"Date: {now}\n--------------------------------\n{body}\n"
-        if not note_path.is_file() and user_name is not None:
-            header = f"Email: {email}\nName: {user_name}\n"
-            note_path.write_text(header + "\n" + entry)
-        else:
-            with note_path.open("a") as f:
-                f.write("\n" + entry)
 
     def _send_confirmation(self, email: str, action: str, user_name: str) -> None:
         if self._sender_queue is None:
@@ -259,10 +229,10 @@ class SubscriberStore:
         text_body = template.text_body.replace("{name}", user_name)
         html_body = template.html_body.replace("{name}", user_name)
         self._sender_queue.push(
-            SendRequest(
+            MailItem(
                 to=[email],
                 subject=template.subject,
-                body=text_body,
+                text_body=text_body,
                 html_body=html_body,
                 send_at="immediate",
             )
@@ -273,16 +243,16 @@ class SubscriberStore:
         text = (subject + " " + body).lower()
         if "unsubscribe" in text:
             self.remove(sender)
-            user_name = self._read_user_name(sender) or self._extract_user_name(
+            user_name = self._notes.read_user_name(sender) or self._extract_user_name(
                 subject, body, sender
             )
-            self._save_user_note(sender, body, user_name)
+            self._notes.save_received(sender, body, user_name)
             self._send_confirmation(sender, "unsubscribe", user_name)
             logger.info("Action: UNSUBSCRIBE sender=%s name=%s", sender, user_name)
         elif "subscribe" in text:
             self.add(sender)
             user_name = self._extract_user_name(subject, body, sender)
-            self._save_user_note(sender, body, user_name)
+            self._notes.save_received(sender, body, user_name)
             self._send_confirmation(sender, "subscribe", user_name)
             logger.info("Action: SUBSCRIBE sender=%s name=%s", sender, user_name)
         else:

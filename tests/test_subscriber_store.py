@@ -45,25 +45,6 @@ class TestSubscriberStore:
         assert store.list() == []
 
 
-class TestEmailToFilename:
-    def test_basic(self):
-        assert (
-            SubscriberStore._email_to_filename("alice@gmail.com") == "alice_gmail_com"
-        )
-
-    def test_domain_collision(self):
-        a = SubscriberStore._email_to_filename("alice@gmail.com")
-        b = SubscriberStore._email_to_filename("alice@me.com")
-        assert a != b
-        assert a == "alice_gmail_com"
-        assert b == "alice_me_com"
-
-    def test_special_chars(self):
-        result = SubscriberStore._email_to_filename("user+tag@Example.COM")
-        assert "@" not in result
-        assert " " not in result
-
-
 class TestUserNotes:
     def test_note_created_on_subscribe(self, tmp_path: Path):
         store = SubscriberStore(path=str(tmp_path / "subs.txt"))
@@ -99,11 +80,11 @@ class TestUserNotes:
             llm=_mock_llm("Alice"),
         )
         store.handle_email("alice@gmail.com", "subscribe", "add me")
-        assert store._read_user_name("alice@gmail.com") == "Alice"
+        assert store._notes.read_user_name("alice@gmail.com") == "Alice"
 
     def test_read_user_name_missing_file(self, tmp_path: Path):
         store = SubscriberStore(path=str(tmp_path / "subs.txt"))
-        assert store._read_user_name("nobody@example.com") is None
+        assert store._notes.read_user_name("nobody@example.com") is None
 
     def test_unsubscribe_reads_stored_name(self, tmp_path: Path):
         sender_mock = Mock()
@@ -118,7 +99,7 @@ class TestUserNotes:
         store.handle_email("alice@gmail.com", "unsubscribe", "remove me")
         llm_mock.assert_not_called()
         sent_req = sender_mock.push.call_args[0][0]
-        assert "Alice" in sent_req.body
+        assert "Alice" in sent_req.text_body
 
 
 class TestNameExtraction:

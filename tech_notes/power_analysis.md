@@ -10,7 +10,7 @@ the power cost of keeping the process alive vs a cron-based one-shot approach.
 
 | Thread | Wait mechanism | Active CPU per iteration | Iterations/day | Active CPU/day |
 |--------|---------------|-------------------------|----------------|----------------|
-| Main loop | `input()` — kernel block | 0 | — | **0** |
+| Main loop | `Event.wait()` — `pthread_cond_wait` | 0 | — | **0** |
 | Immediate poll | `Event.wait(timeout=20)` | ~0.001s (stat+read empty file) | 4320 | **~4s** |
 | Scheduled poll | `Event.wait(timeout=300)` | ~0.001s (same) | 288 | **~0.3s** |
 | IMAP poll | `Event.wait(timeout=300)` | ~0.1-0.5s (TCP+TLS+SEARCH) | 288 | **~30-150s** |
