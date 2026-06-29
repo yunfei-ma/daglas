@@ -10,7 +10,44 @@ from pathlib import Path
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 LOG_DIR = Path.home() / "Library" / "Logs" / "daglas"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-PYTHON_BIN = Path(sys.executable).resolve()
+
+
+def _resolve_python() -> Path:
+    candidates = [
+        Path(p) / "python3" for p in ["/opt/homebrew/bin", "/usr/local/bin"]
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            ver = subprocess.run(
+                [str(candidate), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                capture_output=True, text=True, timeout=10,
+            )
+            version = ver.stdout.strip()
+            major, minor = (int(v) for v in version.split("."))
+            if major > 3 or (major == 3 and minor >= 10):
+                result = subprocess.run(
+                    [str(candidate), "-c", "import daglas"],
+                    capture_output=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    return candidate.resolve()
+    resolved = Path(sys.executable).resolve()
+    ver = subprocess.run(
+        [str(resolved), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+        capture_output=True, text=True, timeout=10,
+    )
+    version = ver.stdout.strip()
+    major, minor = (int(v) for v in version.split("."))
+    if major < 3 or (major == 3 and minor < 10):
+        print(
+            f"ERROR: Python {version} is too old. daglas requires >=3.10. "
+            f"Install a newer Python via Homebrew and re-run this script."
+        )
+        sys.exit(1)
+    return resolved
+
+
+PYTHON_BIN = _resolve_python()
 
 LESSON_GENERATOR_LABEL = "com.daglas.lessonGenerator"
 RUNNER_LABEL = "com.daglas.runner"

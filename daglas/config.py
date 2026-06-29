@@ -6,9 +6,8 @@ from pathlib import Path
 import yaml
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config_default.yaml"
-USER_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+USER_CONFIG_PATH = Path.cwd() / "config.yaml"
 
 
 @dataclass
