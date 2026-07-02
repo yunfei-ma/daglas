@@ -9,6 +9,10 @@ vocab_count: 5
 # sources:
 #   - name: svt
 #     sitemap: https://www.svt.se/sitemap.xml
+# llm_backend: mlx
+# llm_model: mlx-community/Llama-3.2-3B-Instruct-4bit
+# For Ollama backend, uncomment the lines below instead:
+# llm_backend: ollama
 # llm_endpoint: http://localhost:11434/v1
 # llm_model: gemma4:latest
 # smtp_host: smtp.example.com

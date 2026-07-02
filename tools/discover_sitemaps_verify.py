@@ -34,6 +34,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also run LLM verification on each site",
     )
+    parser.add_argument(
+        "--llm-backend",
+        default="",
+        help="LLM backend: ollama, mlx, or llamacpp (default: ollama)",
+    )
     args = parser.parse_args(argv)
 
     llm_provider = None
@@ -41,13 +46,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             import daglas.config as daglas_config
 
-            daglas_config.config = daglas_config.load_config()
-            cfg = daglas_config.config
-            from daglas.lesson.llm import create_provider
+            if daglas_config.config is None:
+                daglas_config.config = daglas_config.load_config()
+            if args.llm_backend:
+                daglas_config.config.llm_backend = args.llm_backend
 
-            llm_provider = create_provider(
-                endpoint=cfg.llm_endpoint, model=cfg.llm_model
-            )
+            from daglas.lesson.llm import Llm
+
+            llm_provider = Llm(data_dir=daglas_config.config.data_dir)
         except Exception as e:
             print(f"Warning: could not initialise LLM: {e}")
 

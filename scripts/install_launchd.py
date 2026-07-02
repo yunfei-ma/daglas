@@ -13,28 +13,39 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _resolve_python() -> Path:
-    candidates = [
-        Path(p) / "python3" for p in ["/opt/homebrew/bin", "/usr/local/bin"]
-    ]
+    candidates = [Path(p) / "python3" for p in ["/opt/homebrew/bin", "/usr/local/bin"]]
     for candidate in candidates:
         if candidate.is_file():
             ver = subprocess.run(
-                [str(candidate), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-                capture_output=True, text=True, timeout=10,
+                [
+                    str(candidate),
+                    "-c",
+                    "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             version = ver.stdout.strip()
             major, minor = (int(v) for v in version.split("."))
             if major > 3 or (major == 3 and minor >= 10):
                 result = subprocess.run(
                     [str(candidate), "-c", "import daglas"],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
                 if result.returncode == 0:
                     return candidate.resolve()
     resolved = Path(sys.executable).resolve()
     ver = subprocess.run(
-        [str(resolved), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-        capture_output=True, text=True, timeout=10,
+        [
+            str(resolved),
+            "-c",
+            "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     version = ver.stdout.strip()
     major, minor = (int(v) for v in version.split("."))

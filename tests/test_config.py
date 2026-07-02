@@ -57,3 +57,11 @@ class TestFirstRun:
         cfg = load_config(user, default_path=tmp_path / "nonexistent.yaml")
         assert cfg.article_word_limit == 100
         assert not user.exists()
+
+
+class TestDefaults:
+    def test_admin_email_default(self):
+        assert DaglasConfig().admin_email == ""
+
+    def test_llm_backend_default_mlx(self):
+        assert DaglasConfig().llm_backend == "mlx"

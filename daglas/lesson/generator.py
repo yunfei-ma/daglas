@@ -47,4 +47,17 @@ def generate_lesson(
     if dry_run:
         return None
 
-    return provider.prompt(system=system_prompt, user=user_prompt)
+    lesson_text = provider.prompt(system=system_prompt, user=user_prompt)
+    return _validate_lesson(lesson_text)
+
+
+_VALIDATION_ERROR_PREFIXES = ("[", "Error", "Traceback", "Exception")
+
+
+def _validate_lesson(text: str) -> str | None:
+    if not text or not text.strip():
+        return None
+    stripped = text.strip()
+    if stripped.startswith(_VALIDATION_ERROR_PREFIXES):
+        return None
+    return text

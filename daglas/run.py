@@ -17,7 +17,7 @@ from daglas.context_pool import ContextPool
 from daglas.email_sender_queue import EmailSenderQueue, MailItem
 from daglas.lesson.formatter import format_email
 from daglas.lesson.generator import generate_lesson
-from daglas.lesson.llm import create_provider
+from daglas.lesson.llm import Llm
 from daglas.subscriber_store import SubscriberStore
 
 
@@ -33,6 +33,30 @@ def _wire_email_receiver(cfg, sender_queue):
 
     receiver = EmailReceiver(queue)
     return receiver
+
+
+def _send_admin_alert(
+    sender_queue: EmailSenderQueue,
+    cfg,
+    title: str,
+    details: str,
+) -> None:
+    if not cfg or not cfg.admin_email:
+        return
+    text = (
+        f"Dagläs Alert — {title}\n\n"
+        f"Time: {datetime.now(timezone.utc).isoformat()}\n"
+        f"{details}\n"
+    )
+    sender_queue.push(
+        MailItem(
+            to=[cfg.admin_email],
+            subject=f"Dagläs: {title}",
+            text_body=text,
+            html_body=f"<pre>{text}</pre>",
+            send_at="immediate",
+        )
+    )
 
 
 def _resolve_send_time(time_str: str) -> str:
@@ -54,7 +78,7 @@ def _resolve_send_time(time_str: str) -> str:
 
 
 def _queue_lessons(
-    provider,
+    llm: Llm,
     articles: list[dict],
     send_at: str,
     sender_queue: EmailSenderQueue,
@@ -77,7 +101,7 @@ def _queue_lessons(
     logger = logging.getLogger("run")
     for (group_level, group_vcount), emails in groups.items():
         lesson_text = generate_lesson(
-            provider,
+            llm,
             articles,
             level=group_level,
             vocab_count=group_vcount,
@@ -87,6 +111,16 @@ def _queue_lessons(
                 "Lesson generation returned empty for group level=%s vcount=%d",
                 group_level,
                 group_vcount,
+            )
+            article_info = "\n".join(
+                a.get("title", "") for a in articles if a.get("title")
+            )
+            _send_admin_alert(
+                sender_queue,
+                cfg,
+                "Lesson generation failed",
+                f"Group: level={group_level} vcount={group_vcount}\n"
+                f"Articles:\n{article_info}",
             )
             continue
 
@@ -120,8 +154,9 @@ def _run_generate() -> None:
         logger = logging.getLogger("run")
         logger.info("EmailReceiver: processed %d email(s)", count)
 
-    if not cfg.llm_endpoint:
-        print("ERROR: llm_endpoint not configured in config.yaml")
+    required_for_http = ("ollama", "llamacpp")
+    if (cfg.llm_backend or "") in required_for_http and not cfg.llm_endpoint:
+        print("ERROR: llm_endpoint required for ollama/llamacpp backends")
         sys.exit(1)
 
     pool = ContextPool()
@@ -150,11 +185,7 @@ def _run_generate() -> None:
     )
     print(f"Selected article: {best.get('title', '')[:70]}")
 
-    provider = create_provider(
-        endpoint=cfg.llm_endpoint,
-        model=cfg.llm_model,
-        api_key=cfg.llm_api_key,
-    )
+    llm = Llm(data_dir=cfg.data_dir)
 
     md_path = out_dir / "lesson.md"
     first_group = True
@@ -174,13 +205,21 @@ def _run_generate() -> None:
     resolved = _resolve_send_time(cfg.send_time)
     for (group_level, group_vcount), emails in groups.items():
         lesson_text = generate_lesson(
-            provider,
+            llm,
             [best],
             level=group_level,
             vocab_count=group_vcount,
         )
         if not lesson_text:
             print("ERROR: lesson generation returned empty result")
+            _send_admin_alert(
+                sender_queue,
+                cfg,
+                "Lesson generation failed",
+                f"Article: {best.get('title', '')}\n"
+                f"URL: {best.get('url', '')}\n"
+                f"Group: level={group_level} vcount={group_vcount}",
+            )
             continue
 
         email = format_email(lesson_text)

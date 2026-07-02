@@ -29,9 +29,13 @@ class DaglasConfig:
     sources: list[dict] = field(default_factory=list)
 
     # --- LLM ---
+    llm_backend: str = "mlx"
     llm_model: str = ""
     llm_endpoint: str = ""
     llm_api_key: str = ""
+
+    # --- Admin ---
+    admin_email: str = ""
 
     # --- Email ---
     smtp_host: str = ""

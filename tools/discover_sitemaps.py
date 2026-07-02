@@ -512,34 +512,24 @@ def main(argv: list[str] | None = None) -> int:
         help="Max sitemap index recursion depth (default: 3)",
     )
     parser.add_argument(
-        "--llm-endpoint",
+        "--llm-backend",
         default="",
-        help="LLM endpoint (default: from config or localhost:11434)",
-    )
-    parser.add_argument(
-        "--llm-model",
-        default="",
-        help="LLM model name (default: from config or llama3.2)",
+        help="LLM backend: ollama, mlx, or llamacpp (default: ollama)",
     )
     args = parser.parse_args(argv)
 
     llm_provider = None
     if args.verify:
-        endpoint = args.llm_endpoint
-        model = args.llm_model
-        if not endpoint or not model:
-            try:
-                import daglas.config as daglas_config
+        import daglas.config as daglas_config
 
-                daglas_config.config = daglas_config.load_config()
-                cfg = daglas_config.config
-                endpoint = endpoint or cfg.llm_endpoint
-                model = model or cfg.llm_model
-            except Exception:
-                pass
-        from daglas.lesson.llm import create_provider
+        if daglas_config.config is None:
+            daglas_config.config = daglas_config.load_config()
+        if args.llm_backend:
+            daglas_config.config.llm_backend = args.llm_backend
 
-        llm_provider = create_provider(endpoint=endpoint, model=model)
+        from daglas.lesson.llm import Llm
+
+        llm_provider = Llm(data_dir=daglas_config.config.data_dir)
 
     result = discover_sitemaps(
         args.domain,
