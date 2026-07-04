@@ -1,139 +1,81 @@
 from __future__ import annotations
 
-import json
 import logging
+import queue
 import subprocess
 import threading
 import time
 import uuid
 from collections.abc import Callable
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Protocol
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
+VALID_BACKENDS = frozenset({"ollama", "llamacpp", "mlx_server"})
 
-class LlmProvider(Protocol):
-    def prompt(self, system: str, user: str) -> str: ...
-
-    def start(self) -> None: ...
-
-    def stop(self) -> None: ...
-
-
-# ---------------------------------------------------------------------------
-# HTTP providers — run inside the LLM subprocess
-# ---------------------------------------------------------------------------
-
-
-class LlmOllama:
-    def __init__(
-        self,
-        endpoint: str = "http://localhost:11434/v1",
-        model: str = "llama3.2",
-        api_key: str = "",
-    ):
-        self._endpoint = endpoint.rstrip("/")
-        self._model = model
-        self._api_key = api_key
-
-    def start(self) -> None:
-        pass
-
-    def stop(self) -> None:
-        pass
-
-    def prompt(self, system: str, user: str) -> str:
-        import httpx
-
-        headers = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-        body = {
-            "model": self._model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "stream": False,
-        }
-        resp = httpx.post(
-            f"{self._endpoint}/chat/completions",
-            headers=headers,
-            json=body,
-            timeout=300,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
-
-
-class LlmLlamaCpp:
-    def __init__(
-        self,
-        endpoint: str = "http://localhost:8080/v1",
-        model: str = "",
-        api_key: str = "",
-    ):
-        self._endpoint = endpoint.rstrip("/")
-        self._model = model
-        self._api_key = api_key
-
-    def start(self) -> None:
-        pass
-
-    def stop(self) -> None:
-        pass
-
-    def prompt(self, system: str, user: str) -> str:
-        import httpx
-
-        headers = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-        body = {
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "max_tokens": 2048,
-        }
-        resp = httpx.post(
-            f"{self._endpoint}/chat/completions",
-            headers=headers,
-            json=body,
-            timeout=300,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
-
-
-# ---------------------------------------------------------------------------
-# Llm — public API (main process)
-# ---------------------------------------------------------------------------
+BACKEND_DEFAULTS: dict[str, dict] = {
+    "ollama": {
+        "endpoint": "http://localhost:11434/v1",
+        "model": "llama3.2",
+    },
+    "llamacpp": {
+        "endpoint": "http://localhost:8080/v1",
+        "model": "",
+    },
+    "mlx_server": {
+        "endpoint": "http://localhost:8081/v1",
+        "model": "mlx-community/Llama-3.2-3B-Instruct-4bit",
+        "server_cmd": [
+            "mlx_lm.server",
+            "--model",
+            "mlx-community/Llama-3.2-3B-Instruct-4bit",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8081",
+        ],
+    },
+}
 
 
 class Llm:
-    """Public API, runs in main process (no LLM model loaded).
-    post() writes a JSON line to prompts.jsonl and returns.
-    If the LLM subprocess is not running, _ensure_process() spawns it
-    via the main() entry point.  A response thread polls responses.jsonl
-    and dispatches results to callbacks."""
+    """Prompt queue with HTTP dispatch and optional server lifecycle.
 
-    def __init__(self, data_dir: str = "data"):
-        self._data_dir = Path(data_dir)
-        self._prompts_path = self._data_dir / "llm" / "prompts.jsonl"
-        self._responses_path = self._data_dir / "llm" / "responses.jsonl"
-        self._prompts_path.parent.mkdir(parents=True, exist_ok=True)
+    For mlx_server backend: manages mlx_lm.server subprocess — spawn
+    before worker loop, SIGTERM after loop.
 
+    For ollama/llamacpp backends: no process management; server
+    assumed to be running externally. Start/stop are no-ops.
+    """
+
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        model: str = "",
+        api_key: str = "",
+        max_tokens: int = 2048,
+        manage_process: bool = False,
+        server_cmd: list[str] | None = None,
+        idle_timeout: float = 20.0,
+    ):
+        self._endpoint = endpoint.rstrip("/")
+        self._model = model
+        self._api_key = api_key
+        self._max_tokens = max_tokens
+        self._manage_process = manage_process
+        self._server_cmd = server_cmd or []
+        self._idle_timeout = idle_timeout
+
+        self._queue: queue.Queue = queue.Queue()
         self._pending: dict[str, Callable[[str], None]] = {}
         self._process: subprocess.Popen | None = None
-        self._resp_thread: threading.Thread | None = None
-        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._lock = threading.Lock()
 
     def prompt(self, system: str = "", user: str = "") -> str:
-        """Synchronous convenience — satisfies LlmProvider protocol."""
         return self.prompt_sync(system=system, prompt=user)
 
     def post(
@@ -142,26 +84,15 @@ class Llm:
         system: str = "",
         callback: Callable[[str], None] | None = None,
     ) -> None:
-        """Enqueue a prompt via prompts.jsonl. Returns immediately."""
+        """Enqueue a prompt. Returns immediately."""
         item_id = str(uuid.uuid4())
         if callback:
             self._pending[item_id] = callback
-        line = json.dumps(
-            {
-                "id": item_id,
-                "system": system,
-                "prompt": prompt,
-                "queued_at": datetime.now(timezone.utc).isoformat(),
-            },
-            ensure_ascii=False,
-        )
-        with self._lock:
-            with open(self._prompts_path, "a") as f:
-                f.write(line + "\n")
-        self._ensure_process()
+        self._queue.put({"id": item_id, "system": system, "prompt": prompt})
+        self._ensure_worker()
 
     def prompt_sync(self, system: str = "", prompt: str = "") -> str:
-        """Synchronous convenience wrapper around post()."""
+        """Synchronous wrapper around post()."""
         result: list[str] = []
         event = threading.Event()
 
@@ -174,158 +105,131 @@ class Llm:
         return result[0]
 
     def close(self) -> None:
-        """Kill the subprocess and stop the response thread."""
+        """Stop worker thread and clean up server process."""
         self._stop_event.set()
-        if self._process is not None:
+        self._queue.put(None)
+        if self._thread is not None:
+            self._thread.join(timeout=10)
+
+    def _ensure_worker(self) -> None:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._thread = threading.Thread(target=self._worker_loop, daemon=True)
+            self._thread.start()
+
+    def _start_server(self) -> None:
+        if not self._manage_process or not self._server_cmd:
+            return
+        self._process = subprocess.Popen(self._server_cmd)
+        logger.info("LLM server started pid=%d", self._process.pid)
+        for _ in range(60):
+            if self._stop_event.is_set():
+                return
+            try:
+                resp = httpx.get(f"{self._endpoint}/models", timeout=1)
+                if resp.status_code == 200:
+                    logger.info("LLM server ready")
+                    return
+            except Exception:
+                pass
+            time.sleep(1)
+        logger.warning("LLM server did not become ready within 60 seconds")
+
+    def _stop_server(self) -> None:
+        if not self._manage_process:
+            return
+        with self._lock:
+            if self._process is None:
+                return
             try:
                 self._process.terminate()
                 self._process.wait(timeout=5)
             except Exception:
                 self._process.kill()
             self._process = None
+            logger.info("LLM server terminated")
 
-    # -- internal --
-
-    def _ensure_process(self) -> None:
-        with self._lock:
-            if self._process is not None and self._process.poll() is None:
-                return
-            cmd = ["python3", "-m", "daglas.lesson.llm"]
-            self._process = subprocess.Popen(cmd)
-            logger.info("LLM subprocess started pid=%d", self._process.pid)
-            if self._resp_thread is None or not self._resp_thread.is_alive():
-                self._stop_event.clear()
-                self._resp_thread = threading.Thread(
-                    target=self._poll_responses, daemon=True
-                )
-                self._resp_thread.start()
-
-    def _pop_responses(self) -> dict | None:
-        """Read and remove the first line from responses.jsonl."""
-        with self._lock:
-            if not self._responses_path.is_file():
-                return None
-            lines = self._responses_path.read_text().splitlines()
-            if not lines:
-                return None
-            first = json.loads(lines[0])
-            remaining = lines[1:]
-            if remaining:
-                self._responses_path.write_text("\n".join(remaining) + "\n")
-            else:
-                self._responses_path.unlink()
-        return first
-
-    def _poll_responses(self) -> None:
-        while not self._stop_event.is_set():
-            time.sleep(0.1)
-            item = self._pop_responses()
-            if item is None:
-                continue
-            item_id = item["id"]
-            callback = self._pending.pop(item_id, None)
-            if "error" in item and item["error"]:
-                if callback:
-                    callback(item["error"])
-            elif "text" in item:
-                if callback:
-                    callback(item["text"])
-
-
-# ---------------------------------------------------------------------------
-# LLM subprocess entry point
-# ---------------------------------------------------------------------------
-
-
-def _create_provider_from_config() -> LlmProvider:
-    """Read config and build the appropriate provider."""
-    import daglas.config as daglas_config
-
-    if daglas_config.config is None:
-        daglas_config.config = daglas_config.load_config()
-    cfg = daglas_config.config
-
-    backend = (cfg.llm_backend or "").lower()
-    endpoint = cfg.llm_endpoint or ""
-    model = cfg.llm_model or ""
-    api_key = cfg.llm_api_key or ""
-
-    if backend == "ollama":
-        return LlmOllama(endpoint=endpoint, model=model, api_key=api_key)
-    if backend == "llamacpp":
-        return LlmLlamaCpp(endpoint=endpoint, model=model, api_key=api_key)
-    from daglas.lesson.llm_mlx import LlmMLX
-
-    return LlmMLX(model=model, endpoint=endpoint)
-
-
-def _pop_jsonl(path: Path) -> dict | None:
-    """Read and remove the first line from a JSONL file."""
-    if not path.is_file():
-        return None
-    with open(path) as f:
-        lines = f.readlines()
-    if not lines:
-        return None
-    first = json.loads(lines[0])
-    remaining = lines[1:]
-    if remaining:
-        with open(path, "w") as f:
-            f.writelines(remaining)
-    else:
-        path.unlink()
-    return first
-
-
-def _append_jsonl(path: Path, data: dict) -> None:
-    """Append a JSON line to a file."""
-    with open(path, "a") as f:
-        f.write(json.dumps(data, ensure_ascii=False) + "\n")
-
-
-def main(idle_timeout: float = 20.0):
-    """Subprocess entry point. Reads prompts.jsonl, calls provider,
-    writes responses.jsonl.  Exits after idle_timeout seconds of empty queue."""
-    logging.basicConfig(level=logging.INFO)
-
-    import daglas.config as daglas_config
-
-    if daglas_config.config is None:
-        daglas_config.config = daglas_config.load_config()
-    cfg = daglas_config.config
-
-    data_dir = Path(cfg.data_dir)
-    prompts_path = data_dir / "llm" / "prompts.jsonl"
-    responses_path = data_dir / "llm" / "responses.jsonl"
-    prompts_path.parent.mkdir(parents=True, exist_ok=True)
-
-    provider = _create_provider_from_config()
-    provider.start()
-    logger.info("Provider started: %s", type(provider).__name__)
-
-    idle_seconds = 0.0
-
-    try:
-        while True:
-            time.sleep(0.1)
-            item = _pop_jsonl(prompts_path)
-            if item is None:
-                idle_seconds += 0.1
-                if idle_seconds >= idle_timeout:
-                    logger.info("Idle timeout reached, exiting")
+    def _worker_loop(self) -> None:
+        self._start_server()
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    item = self._queue.get(timeout=self._idle_timeout)
+                except queue.Empty:
                     break
-                continue
 
-            idle_seconds = 0.0
+                if item is None:
+                    break
+
+                try:
+                    text = self._call_llm(item.get("system", ""), item["prompt"])
+                    self._dispatch(item["id"], text)
+                except Exception as exc:
+                    logger.exception("LLM call failed")
+                    self._dispatch(item["id"], str(exc))
+        finally:
+            self._stop_server()
+
+    def _call_llm(self, system: str, user: str) -> str:
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        body: dict = {
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "max_tokens": self._max_tokens,
+        }
+        if self._model:
+            body["model"] = self._model
+
+        url = f"{self._endpoint}/chat/completions"
+        for attempt in range(30):
             try:
-                text = provider.prompt(item.get("system", ""), item["prompt"])
-                _append_jsonl(responses_path, {"id": item["id"], "text": text})
-            except Exception as exc:
-                _append_jsonl(responses_path, {"id": item["id"], "error": str(exc)})
-    finally:
-        provider.stop()
-        logger.info("Provider stopped")
+                resp = httpx.post(url, headers=headers, json=body, timeout=300)
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
+            except (httpx.ConnectError, httpx.RemoteProtocolError):
+                if attempt < 29:
+                    time.sleep(2)
+                    continue
+                raise
+
+    def _dispatch(self, item_id: str, text: str) -> None:
+        callback = self._pending.pop(item_id, None)
+        if callback:
+            callback(text)
 
 
-if __name__ == "__main__":
-    main()
+_BACKEND_ALIASES = {"mlx": "mlx_server"}
+
+
+def create_llm(cfg) -> Llm:
+    """Build a configured Llm instance from DaglasConfig."""
+    backend = (cfg.llm_backend or "").lower()
+    backend = _BACKEND_ALIASES.get(backend, backend)
+
+    if backend not in VALID_BACKENDS:
+        raise ValueError(
+            f"Unknown llm_backend={cfg.llm_backend!r}. "
+            f"Valid: {', '.join(sorted(VALID_BACKENDS))}"
+        )
+
+    defaults = BACKEND_DEFAULTS[backend]
+    endpoint = cfg.llm_endpoint or defaults["endpoint"]
+    model = cfg.llm_model or defaults["model"]
+    server_cmd = defaults.get("server_cmd", [])
+
+    return Llm(
+        endpoint=endpoint,
+        model=model,
+        api_key=cfg.llm_api_key or "",
+        max_tokens=getattr(cfg, "llm_max_tokens", 2048),
+        manage_process=backend == "mlx_server",
+        server_cmd=server_cmd,
+        idle_timeout=getattr(cfg, "llm_idle_timeout", 20.0),
+    )

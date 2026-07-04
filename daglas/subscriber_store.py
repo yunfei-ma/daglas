@@ -10,7 +10,7 @@ from pathlib import Path
 import daglas.config
 from daglas.email_sender_queue import EmailSenderQueue, MailItem
 from daglas.lesson.formatter import Email
-from daglas.lesson.llm import LlmProvider
+from typing import Any
 from daglas.user_note_store import UserNoteStore
 
 logger = logging.getLogger(__name__)
@@ -135,7 +135,7 @@ class SubscriberStore:
         self,
         path: str | None = None,
         sender_queue: EmailSenderQueue | None = None,
-        llm: LlmProvider | None = None,
+        llm: Any | None = None,
         notes: UserNoteStore | None = None,
         welcome_template: Email | None = None,
         unsubscribe_template: Email | None = None,

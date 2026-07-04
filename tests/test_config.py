@@ -64,4 +64,4 @@ class TestDefaults:
         assert DaglasConfig().admin_email == ""
 
     def test_llm_backend_default_mlx(self):
-        assert DaglasConfig().llm_backend == "mlx"
+        assert DaglasConfig().llm_backend == "mlx_server"

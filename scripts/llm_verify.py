@@ -1,13 +1,8 @@
-"""Verify LlmMLX works against real hardware (Metal GPU).
+"""
+Deprecated — MLX inference now uses ``mlx_lm.server``.
 
-Usage:
-    python scripts/llm_verify.py
-
-Requires:
-    - Apple Silicon Mac with MLX installed
-    - Model cached in ~/.cache/huggingface/ (auto-downloads if missing)
-
-This is an integration test — not mocked, not skipped.
+See ``scripts/mlx_server_memory_proof.py`` for the equivalent
+memory-reclamation verification against the server process.
 """
 
 from __future__ import annotations

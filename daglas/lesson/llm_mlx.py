@@ -1,3 +1,10 @@
+"""
+Deprecated — MLX backend is now managed via ``mlx_lm.server``.
+
+Use ``daglas.lesson.llm.create_llm(cfg)`` with
+``cfg.llm_backend = "mlx_server"`` instead.
+"""
+
 from __future__ import annotations
 
 

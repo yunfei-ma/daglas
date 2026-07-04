@@ -23,6 +23,11 @@ class EmailReceiver:
         self._imap_user = cfg.imap_user if cfg else ""
         self._imap_password = cfg.imap_password if cfg else ""
         self._poll_interval = cfg.email_receiver_poll_interval if cfg else 300
+        logger.debug(
+            "EmailReceiver poll_interval=%ds imap_host=%s",
+            self._poll_interval,
+            self._imap_host,
+        )
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -47,17 +52,28 @@ class EmailReceiver:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            start = time.monotonic()
-            count = self.check_once()
-            if count:
-                logger.info("Pushed %d email(s) to queue", count)
-            elapsed = time.monotonic() - start
-            if not self._stop_event.is_set():
-                sleep_time = max(0, self._poll_interval - elapsed)
-                self._stop_event.wait(timeout=sleep_time)
+            try:
+                start = time.monotonic()
+                count = self.check_once()
+                if count:
+                    logger.info("Pushed %d email(s) to queue", count)
+                elapsed = time.monotonic() - start
+                if not self._stop_event.is_set():
+                    sleep_time = max(0, self._poll_interval - elapsed)
+                    logger.debug(
+                        "EmailReceiver cycle: check_took=%.2fs "
+                        "poll_interval=%ds next_check_in=%.2fs",
+                        elapsed,
+                        self._poll_interval,
+                        sleep_time,
+                    )
+                    self._stop_event.wait(timeout=sleep_time)
+            except Exception:
+                logger.exception("EmailReceiver._run: unhandled exception, restarting")
 
     def _connect(self):
-        conn = imaplib.IMAP4_SSL(self._imap_host, self._imap_port)
+        conn = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+        conn.sock.settimeout(30)
         conn.login(self._imap_user, self._imap_password)
         conn.select("INBOX")
         return conn
@@ -93,6 +109,38 @@ class EmailReceiver:
         conn.store(msg_id, "+FLAGS", "\\Seen")
         return True
 
+    @staticmethod
+    def _spam_folder_names() -> list[str]:
+        return ["[Gmail]/Spam", "[Gmail]/Skr\u00e4ppost", "[Gmail]/Bulk Mail", "Spam"]
+
+    def _scan_folder(self, conn, folder: str) -> int:
+        conn.select(folder)
+        _, data = conn.search(None, "UNSEEN")
+        msg_ids = data[0].split() if data[0] else []
+        count = 0
+        for msg_id in msg_ids:
+            try:
+                if self._parse_and_push(conn, msg_id):
+                    count += 1
+            except Exception as e:
+                logger.error("Failed to process message %s: %s", msg_id, e)
+        if count:
+            logger.info("Scanned folder=%s unseen=%d", folder, count)
+        return count
+
+    def _find_spam_folder(self, conn) -> str | None:
+        try:
+            typ, folders = conn.list()
+        except Exception:
+            return None
+        candidates = self._spam_folder_names()
+        for line in folders:
+            decoded = line.decode(errors="replace")
+            for candidate in candidates:
+                if candidate.lower() in decoded.lower():
+                    return candidate
+        return None
+
     def check_once(self) -> int:
         logger.info("Checking for new email...")
         count = 0
@@ -102,14 +150,10 @@ class EmailReceiver:
             logger.error("IMAP connection failed: %s", e)
             return 0
         try:
-            _, data = conn.search(None, "UNSEEN")
-            msg_ids = data[0].split() if data[0] else []
-            for msg_id in msg_ids:
-                try:
-                    if self._parse_and_push(conn, msg_id):
-                        count += 1
-                except Exception as e:
-                    logger.error("Failed to process message %s: %s", msg_id, e)
+            count += self._scan_folder(conn, "INBOX")
+            spam_folder = self._find_spam_folder(conn)
+            if spam_folder:
+                count += self._scan_folder(conn, spam_folder)
         except Exception as e:
             logger.error("IMAP search failed: %s", e)
         finally:
@@ -130,6 +174,12 @@ class EmailReceiver:
                 logger.info("Pushed %d email(s) to queue", count)
             elapsed = time.monotonic() - start
             iterations += 1
+            logger.debug(
+                "EmailReceiver cycle %d: check_took=%.2fs poll_interval=%ds",
+                iterations,
+                elapsed,
+                self._poll_interval,
+            )
             if (
                 max_iterations is None or iterations < max_iterations
             ) and not self._stop_event.is_set():

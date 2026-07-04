@@ -1,58 +1,128 @@
 from __future__ import annotations
 
-import json
+import threading
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
-from daglas.lesson.llm import (
-    Llm,
-    LlmLlamaCpp,
-    LlmOllama,
-    _create_provider_from_config,
-    _pop_jsonl,
-    _append_jsonl,
-)
+from daglas.lesson.llm import Llm, create_llm, VALID_BACKENDS, BACKEND_DEFAULTS
 
 
 # =========================================================================
-# Provider tests
+# Internal helpers: _start_server / _stop_server
 # =========================================================================
 
 
-class TestLlmOllama:
-    def test_start_stop_noop(self):
-        provider = LlmOllama()
-        provider.start()
-        provider.stop()
+class TestStartServer:
+    def test_spawns_when_managing(self):
+        llm = Llm(
+            endpoint="http://test", manage_process=True, server_cmd=["echo", "hello"]
+        )
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        with patch("subprocess.Popen") as mock_popen, patch(
+            "httpx.get", return_value=mock_resp
+        ):
+            llm._start_server()
+            mock_popen.assert_called_once_with(["echo", "hello"])
 
-    def test_prompt(self):
-        provider = LlmOllama(endpoint="http://localhost:11434/v1", model="test-model")
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": "Hej världen"}}]
-        }
+    def test_noop_when_not_managing(self):
+        llm = Llm(endpoint="http://test")
+        with patch("subprocess.Popen") as mock_popen, patch("httpx.get"):
+            llm._start_server()
+            mock_popen.assert_not_called()
 
-        with patch("httpx.post", return_value=mock_response) as mock_post:
-            result = provider.prompt(system="You are a teacher", user="Hello")
-            assert result == "Hej världen"
-            mock_post.assert_called_once()
+    def test_noop_when_no_cmd(self):
+        llm = Llm(endpoint="http://test", manage_process=True)
+        with patch("subprocess.Popen") as mock_popen, patch("httpx.get"):
+            llm._start_server()
+            mock_popen.assert_not_called()
 
-    def test_prompt_sends_api_key(self):
-        provider = LlmOllama(api_key="secret-key")
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
 
-        with patch("httpx.post", return_value=mock_response) as mock_post:
-            provider.prompt(system="", user="")
-            call_kwargs = mock_post.call_args[1]
-            assert call_kwargs["headers"]["Authorization"] == "Bearer secret-key"
+class TestStopServer:
+    def test_terminates_process(self):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        llm = Llm(endpoint="http://test", manage_process=True)
+        llm._process = mock_proc
+        llm._stop_server()
+        mock_proc.terminate.assert_called_once()
+        assert llm._process is None
+
+    def test_kills_on_terminate_timeout(self):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.terminate.side_effect = OSError("timeout")
+        llm = Llm(endpoint="http://test", manage_process=True)
+        llm._process = mock_proc
+        llm._stop_server()
+        mock_proc.kill.assert_called_once()
+
+    def test_noop_when_not_managing(self):
+        mock_proc = MagicMock()
+        llm = Llm(endpoint="http://test", manage_process=False)
+        llm._process = mock_proc
+        llm._stop_server()
+        mock_proc.terminate.assert_not_called()
+
+    def test_noop_when_no_process(self):
+        llm = Llm(endpoint="http://test", manage_process=True)
+        llm._stop_server()
+
+
+# =========================================================================
+# _call_llm HTTP method
+# =========================================================================
+
+
+class TestCallLlm:
+    def test_posts_to_correct_endpoint(self):
+        llm = Llm(endpoint="http://test:8080/v1", model="m")
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"choices": [{"message": {"content": "hej"}}]}
+
+        with patch("httpx.post", return_value=mock_resp) as mock_post:
+            result = llm._call_llm(system="S", user="U")
+            assert result == "hej"
+            mock_post.assert_called_once_with(
+                "http://test:8080/v1/chat/completions",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "messages": [
+                        {"role": "system", "content": "S"},
+                        {"role": "user", "content": "U"},
+                    ],
+                    "stream": False,
+                    "max_tokens": 2048,
+                    "model": "m",
+                },
+                timeout=300,
+            )
+
+    def test_sends_api_key(self):
+        llm = Llm(endpoint="http://test", api_key="secret")
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+
+        with patch("httpx.post", return_value=mock_resp) as mock_post:
+            llm._call_llm("", "")
+            assert mock_post.call_args[1]["headers"]["Authorization"] == "Bearer secret"
+
+    def test_omits_model_when_empty(self):
+        llm = Llm(endpoint="http://test", model="")
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+
+        with patch("httpx.post", return_value=mock_resp) as mock_post:
+            llm._call_llm("", "")
+            assert "model" not in mock_post.call_args[1]["json"]
 
     def test_raises_on_http_error(self):
-        provider = LlmOllama()
+        llm = Llm(endpoint="http://test")
         with patch(
             "httpx.post",
             side_effect=httpx.HTTPStatusError(
@@ -60,387 +130,247 @@ class TestLlmOllama:
             ),
         ):
             with pytest.raises(httpx.HTTPStatusError):
-                provider.prompt(system="", user="")
-
-
-class TestLmLlamaCpp:
-    def test_start_stop_noop(self):
-        provider = LlmLlamaCpp()
-        provider.start()
-        provider.stop()
-
-    def test_prompt(self):
-        provider = LlmLlamaCpp(endpoint="http://localhost:8080/v1")
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"choices": [{"message": {"content": "Hej"}}]}
-
-        with patch("httpx.post", return_value=mock_response):
-            result = provider.prompt(system="", user="")
-            assert result == "Hej"
-
-
-class TestLlmMLX:
-    def test_start_stop(self):
-        from daglas.lesson.llm_mlx import LlmMLX
-
-        provider = LlmMLX(model="dummy-model")
-        assert provider._state is None
-
-        with patch("mlx_lm.load", return_value=("mock_model", "mock_tokenizer")):
-            provider.start()
-            assert provider._state is not None
-
-        provider.stop()
-        assert provider._state is None
-
-    def test_prompt(self):
-        from daglas.lesson.llm_mlx import LlmMLX
-
-        mock_tokenizer = MagicMock()
-        mock_tokenizer.apply_chat_template.return_value = "formatted prompt"
-
-        provider = LlmMLX(model="dummy-model")
-        provider._state = ("mock_model", mock_tokenizer)
-
-        with patch("mlx_lm.generate", return_value="Svenskt svar") as mock_gen:
-            result = provider.prompt(system="System", user="User")
-            assert result == "Svenskt svar"
-            mock_tokenizer.apply_chat_template.assert_called_once()
-            mock_gen.assert_called_once()
+                llm._call_llm("", "")
 
 
 # =========================================================================
-# JSONL helpers
+# Worker lifecycle: _ensure_worker
 # =========================================================================
 
 
-class TestJsonlHelpers:
-    def test_pop_jsonl_empty_file(self, tmp_path):
-        f = tmp_path / "test.jsonl"
-        assert _pop_jsonl(f) is None
+class TestEnsureWorker:
+    def test_starts_thread(self):
+        llm = Llm(endpoint="http://test", idle_timeout=1.0)
+        llm._ensure_worker()
+        assert llm._thread is not None
+        assert llm._thread.is_alive()
 
-    def test_pop_jsonl_reads_first_line(self, tmp_path):
-        f = tmp_path / "test.jsonl"
-        f.write_text('{"a": 1}\n{"a": 2}\n')
-        assert _pop_jsonl(f) == {"a": 1}
-        assert f.read_text() == '{"a": 2}\n'
+    def test_no_duplicate(self):
+        llm = Llm(endpoint="http://test", idle_timeout=1.0)
+        llm._ensure_worker()
+        t1 = llm._thread
+        llm._ensure_worker()
+        assert llm._thread is t1
 
-    def test_pop_jsonl_removes_file_when_last_line(self, tmp_path):
-        f = tmp_path / "test.jsonl"
-        f.write_text('{"a": 1}\n')
-        assert _pop_jsonl(f) == {"a": 1}
-        assert not f.exists()
+    def test_restarts_after_exit(self):
+        llm = Llm(endpoint="http://test", idle_timeout=0.02)
+        event = threading.Event()
 
-    def test_append_jsonl(self, tmp_path):
-        f = tmp_path / "test.jsonl"
-        _append_jsonl(f, {"b": 2})
-        assert f.read_text() == '{"b": 2}\n'
-        _append_jsonl(f, {"c": 3})
-        assert f.read_text() == '{"b": 2}\n{"c": 3}\n'
+        with patch.object(llm, "_call_llm", return_value="ok"):
+            llm.post("hi", callback=lambda t: event.set())
 
+        assert event.wait(timeout=2)
+        t1 = llm._thread
 
-# =========================================================================
-# _create_provider_from_config
-# =========================================================================
+        if t1 is not None:
+            t1.join(timeout=1)
 
-
-class TestCreateProviderFromConfig:
-    @pytest.fixture(autouse=True)
-    def _setup(self):
-        with patch("daglas.config.config") as mock_cfg:
-            mock_cfg.llm_backend = ""
-            mock_cfg.llm_endpoint = ""
-            mock_cfg.llm_model = "test-model"
-            mock_cfg.llm_api_key = ""
-            yield
-
-    def test_default_mlx(self):
-        provider = _create_provider_from_config()
-        from daglas.lesson.llm_mlx import LlmMLX
-
-        assert isinstance(provider, LlmMLX)
-
-    def test_ollama_backend(self):
-        with patch("daglas.config.config") as mock_cfg:
-            mock_cfg.llm_backend = "ollama"
-            mock_cfg.llm_endpoint = "http://localhost:11434/v1"
-            mock_cfg.llm_model = "test-model"
-            mock_cfg.llm_api_key = ""
-            provider = _create_provider_from_config()
-            assert isinstance(provider, LlmOllama)
-            assert provider._endpoint == "http://localhost:11434/v1"
-            assert provider._model == "test-model"
-
-    def test_mlx_backend(self):
-        with patch("daglas.config.config") as mock_cfg:
-            mock_cfg.llm_backend = "mlx"
-            mock_cfg.llm_endpoint = ""
-            mock_cfg.llm_model = "mlx-model"
-            mock_cfg.llm_api_key = ""
-            provider = _create_provider_from_config()
-            from daglas.lesson.llm_mlx import LlmMLX
-
-            assert isinstance(provider, LlmMLX)
-
-    def test_llamacpp_backend(self):
-        with patch("daglas.config.config") as mock_cfg:
-            mock_cfg.llm_backend = "llamacpp"
-            mock_cfg.llm_endpoint = "http://localhost:8080/v1"
-            mock_cfg.llm_model = ""
-            mock_cfg.llm_api_key = ""
-            provider = _create_provider_from_config()
-            assert isinstance(provider, LlmLlamaCpp)
+        llm._ensure_worker()
+        t2 = llm._thread
+        assert t2 is not None and t2.is_alive()
 
 
 # =========================================================================
-# Llm class tests
+# Post and dispatch
 # =========================================================================
 
 
-class TestLlm:
-    @pytest.fixture
-    def llm(self, tmp_path):
-        return Llm(data_dir=str(tmp_path))
-
-    def test_post_writes_to_prompts_jsonl(self, llm, tmp_path):
-        prompts_path = tmp_path / "llm" / "prompts.jsonl"
-
-        with patch.object(llm, "_ensure_process"):
-            llm.post("Hello", system="System")
-
-        lines = prompts_path.read_text().splitlines()
-        assert len(lines) == 1
-        data = json.loads(lines[0])
-        assert data["prompt"] == "Hello"
-        assert data["system"] == "System"
-        assert "id" in data
-        assert "queued_at" in data
-
-    def test_post_ensures_process(self, llm):
-        with patch.object(llm, "_ensure_process") as mock_ensure:
-            llm.post("Hello")
+class TestPost:
+    def test_calls_ensure_worker(self):
+        llm = Llm(endpoint="http://test", idle_timeout=1.0)
+        with patch.object(llm, "_ensure_worker") as mock_ensure:
+            llm.post("hello")
             mock_ensure.assert_called_once()
 
-    def test_ensure_process_spawns_subprocess(self, llm, tmp_path):
-        with patch("subprocess.Popen") as mock_popen:
-            mock_proc = MagicMock()
-            mock_proc.poll.return_value = None
-            mock_popen.return_value = mock_proc
+    def test_invokes_callback(self):
+        llm = Llm(endpoint="http://test", idle_timeout=0.1)
+        event = threading.Event()
+        received = []
 
-            llm._ensure_process()
+        with patch.object(llm, "_call_llm", return_value="world"):
+            llm.post("hello", callback=lambda t: [received.append(t), event.set()])
 
-            mock_popen.assert_called_once_with(["python3", "-m", "daglas.lesson.llm"])
+        assert event.wait(timeout=2)
+        assert received == ["world"]
 
-    def test_ensure_process_does_not_spawn_twice(self, llm):
-        with patch("subprocess.Popen") as mock_popen:
-            mock_proc = MagicMock()
-            mock_proc.poll.return_value = None
-            mock_popen.return_value = mock_proc
+    def test_dispatches_error(self):
+        llm = Llm(endpoint="http://test", idle_timeout=0.1)
+        event = threading.Event()
+        received = []
 
-            llm._ensure_process()
-            llm._ensure_process()
+        with patch.object(llm, "_call_llm", side_effect=ValueError("fail")):
+            llm.post("hello", callback=lambda t: [received.append(t), event.set()])
 
-            assert mock_popen.call_count == 1
+        assert event.wait(timeout=2)
+        assert received == ["fail"]
 
-    def test_pop_responses(self, llm, tmp_path):
-        responses_path = tmp_path / "llm" / "responses.jsonl"
-        responses_path.parent.mkdir(parents=True, exist_ok=True)
-        responses_path.write_text('{"id": "abc", "text": "hello"}\n')
 
-        item = llm._pop_responses()
-        assert item == {"id": "abc", "text": "hello"}
-        assert not responses_path.exists()
+# =========================================================================
+# prompt_sync and prompt convenience
+# =========================================================================
 
-    def test_pop_responses_none_when_empty(self, llm):
-        assert llm._pop_responses() is None
 
-    def test_pop_responses_with_thread_lock(self, llm, tmp_path):
-        responses_path = tmp_path / "llm" / "responses.jsonl"
-        responses_path.parent.mkdir(parents=True, exist_ok=True)
-        responses_path.write_text('{"id": "x", "text": "y"}\n')
-
-        item = llm._pop_responses()
-        assert item == {"id": "x", "text": "y"}
-
-    def test_close_kills_subprocess(self, llm):
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        llm._process = mock_proc
-
-        llm.close()
-        mock_proc.terminate.assert_called_once()
-
-    def test_close_no_process(self, llm):
-        llm.close()
-
-    def test_prompt_sync_calls_post(self, llm):
-        with patch.object(llm, "post") as mock_post:
-
-            def _fake_post(prompt, system="", callback=None):
-                if callback:
-                    callback("mocked")
-
-            mock_post.side_effect = _fake_post
+class TestPromptSync:
+    def test_returns_result(self):
+        llm = Llm(endpoint="http://test", idle_timeout=0.1)
+        with patch.object(llm, "_call_llm", return_value="hej"):
             result = llm.prompt_sync(system="S", prompt="P")
-            assert result == "mocked"
-            mock_post.assert_called_once()
+            assert result == "hej"
 
-    def test_prompt_convenience(self, llm):
+    def test_returns_error_text(self):
+        llm = Llm(endpoint="http://test", idle_timeout=0.1)
+        with patch.object(llm, "_call_llm", side_effect=ValueError("fail")):
+            result = llm.prompt_sync(system="S", prompt="P")
+            assert result == "fail"
+
+
+class TestPrompt:
+    def test_delegates_to_prompt_sync(self):
+        llm = Llm(endpoint="http://test")
         with patch.object(llm, "prompt_sync", return_value="hej") as mock_sync:
             result = llm.prompt(system="S", user="U")
             assert result == "hej"
             mock_sync.assert_called_once_with(system="S", prompt="U")
 
-    def test_dispatch_invokes_callback(self, llm, tmp_path):
-        responses_path = tmp_path / "llm" / "responses.jsonl"
-        responses_path.parent.mkdir(parents=True, exist_ok=True)
-
-        received = []
-
-        def callback(text):
-            received.append(text)
-
-        llm._pending["test-id"] = callback
-        responses_path.write_text('{"id": "test-id", "text": "callback ok"}\n')
-
-        item = llm._pop_responses()
-        assert item is not None
-        cb = llm._pending.pop(item["id"], None)
-        assert cb is not None
-        cb(item.get("text", ""))
-
-        assert received == ["callback ok"]
-
-    def test_dispatch_handles_error(self, llm, tmp_path):
-        responses_path = tmp_path / "llm" / "responses.jsonl"
-        responses_path.parent.mkdir(parents=True, exist_ok=True)
-
-        received = []
-
-        def callback(text):
-            received.append(text)
-
-        llm._pending["test-id"] = callback
-        responses_path.write_text('{"id": "test-id", "error": "something broke"}\n')
-
-        item = llm._pop_responses()
-        assert item is not None
-        assert "error" in item
-        cb = llm._pending.pop(item["id"], None)
-        if cb:
-            cb(item["error"])
-
-        assert received == ["something broke"]
-
 
 # =========================================================================
-# Subprocess main() tests
+# Worker loop: idle exit and server cleanup
 # =========================================================================
 
 
-class TestMain:
-    """main() reads data_dir from config. Patch config to point at tmp_path."""
+class TestWorkerLoop:
+    def test_exits_on_idle(self):
+        llm = Llm(endpoint="http://test", idle_timeout=0.02)
+        event = threading.Event()
 
-    @pytest.fixture
-    def mock_cfg(self, tmp_path):
-        with patch("daglas.config.config") as cfg:
-            cfg.data_dir = str(tmp_path)
-            cfg.llm_backend = ""
-            cfg.llm_endpoint = "http://localhost:11434/v1"
-            cfg.llm_model = "test-model"
-            cfg.llm_api_key = ""
-            yield cfg
+        with patch.object(llm, "_call_llm", return_value="ok"):
+            llm.post("hi", callback=lambda t: event.set())
 
-    def test_main_processes_prompt(self, tmp_path, mock_cfg):
-        prompts_path = tmp_path / "llm" / "prompts.jsonl"
-        responses_path = tmp_path / "llm" / "responses.jsonl"
-        prompts_path.parent.mkdir(parents=True, exist_ok=True)
+        assert event.wait(timeout=2)
 
-        _append_jsonl(
-            prompts_path,
-            {"id": "test-1", "system": "", "prompt": "Hello"},
+        if llm._thread is not None:
+            llm._thread.join(timeout=1)
+        assert llm._thread is None or not llm._thread.is_alive()
+
+    def test_stops_server_after_idle(self):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        llm = Llm(
+            endpoint="http://test",
+            idle_timeout=0.02,
+            manage_process=True,
+            server_cmd=["echo"],
         )
+        llm._process = mock_proc
 
-        mock_provider = MagicMock()
-        mock_provider.prompt.return_value = "response text"
-
-        from daglas.lesson.llm import main as _main
-
+        event = threading.Event()
         with (
-            patch(
-                "daglas.lesson.llm._create_provider_from_config",
-                return_value=mock_provider,
-            ),
-            patch("daglas.lesson.llm.logging"),
-            patch("daglas.lesson.llm.time.sleep"),
+            patch.object(llm, "_call_llm", return_value="ok"),
+            patch.object(llm, "_start_server"),
         ):
-            _main(idle_timeout=0.2)
+            llm.post("hi", callback=lambda t: event.set())
 
-        assert responses_path.is_file()
-        data = json.loads(responses_path.read_text().strip())
-        assert data["id"] == "test-1"
-        assert data["text"] == "response text"
+        assert event.wait(timeout=2)
 
-    def test_main_idle_timeout(self, mock_cfg):
-        mock_provider = MagicMock()
+        if llm._thread is not None:
+            llm._thread.join(timeout=1)
 
-        with (
-            patch(
-                "daglas.lesson.llm._create_provider_from_config",
-                return_value=mock_provider,
-            ),
-            patch("daglas.lesson.llm.logging"),
-            patch("daglas.lesson.llm.time.sleep"),
-        ):
-            from daglas.lesson.llm import main as _main
+        mock_proc.terminate.assert_called_once()
 
-            _main(idle_timeout=0.1)
 
-        mock_provider.stop.assert_called_once()
+# =========================================================================
+# Close
+# =========================================================================
 
-    def test_main_error_writes_error(self, tmp_path, mock_cfg):
-        prompts_path = tmp_path / "llm" / "prompts.jsonl"
-        responses_path = tmp_path / "llm" / "responses.jsonl"
-        prompts_path.parent.mkdir(parents=True, exist_ok=True)
 
-        _append_jsonl(
-            prompts_path,
-            {"id": "err-1", "system": "", "prompt": "Hi"},
-        )
+class TestClose:
+    def test_stops_worker(self):
+        llm = Llm(endpoint="http://test", idle_timeout=1.0)
+        llm._ensure_worker()
+        llm.close()
+        assert llm._thread is None or not llm._thread.is_alive()
 
-        mock_provider = MagicMock()
-        mock_provider.prompt.side_effect = ValueError("LLM failed")
+    def test_kills_server(self):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        llm = Llm(endpoint="http://test", manage_process=True)
+        llm._process = mock_proc
+        llm._ensure_worker()
 
-        with (
-            patch(
-                "daglas.lesson.llm._create_provider_from_config",
-                return_value=mock_provider,
-            ),
-            patch("daglas.lesson.llm.logging"),
-            patch("daglas.lesson.llm.time.sleep"),
-        ):
-            from daglas.lesson.llm import main as _main
+        llm.close()
+        mock_proc.terminate.assert_called_once()
 
-            _main(idle_timeout=0.2)
+    def test_close_without_worker(self):
+        llm = Llm(endpoint="http://test")
+        llm.close()
 
-        data = json.loads(responses_path.read_text().strip())
-        assert data["id"] == "err-1"
-        assert "LLM failed" in data["error"]
 
-    def test_main_stops_provider_on_exit(self, mock_cfg):
-        mock_provider = MagicMock()
+# =========================================================================
+# create_llm factory
+# =========================================================================
 
-        with (
-            patch(
-                "daglas.lesson.llm._create_provider_from_config",
-                return_value=mock_provider,
-            ),
-            patch("daglas.lesson.llm.logging"),
-            patch("daglas.lesson.llm.time.sleep"),
-        ):
-            from daglas.lesson.llm import main as _main
 
-            _main(idle_timeout=0.1)
+class TestCreateLlm:
+    def _cfg(self, **overrides):
+        cfg = MagicMock()
+        cfg.llm_backend = "ollama"
+        cfg.llm_endpoint = ""
+        cfg.llm_model = ""
+        cfg.llm_api_key = ""
+        cfg.llm_max_tokens = 2048
+        cfg.llm_idle_timeout = 20.0
+        for k, v in overrides.items():
+            setattr(cfg, k, v)
+        return cfg
 
-        mock_provider.stop.assert_called_once()
+    def test_ollama(self):
+        cfg = self._cfg(llm_backend="ollama")
+        llm = create_llm(cfg)
+        assert llm._endpoint == BACKEND_DEFAULTS["ollama"]["endpoint"]
+        assert llm._model == BACKEND_DEFAULTS["ollama"]["model"]
+        assert not llm._manage_process
+
+    def test_mlx_server(self):
+        cfg = self._cfg(llm_backend="mlx_server")
+        llm = create_llm(cfg)
+        assert llm._endpoint == BACKEND_DEFAULTS["mlx_server"]["endpoint"]
+        assert llm._manage_process
+        assert llm._server_cmd == BACKEND_DEFAULTS["mlx_server"]["server_cmd"]
+
+    def test_llamacpp(self):
+        cfg = self._cfg(llm_backend="llamacpp")
+        llm = create_llm(cfg)
+        assert not llm._manage_process
+
+    def test_override_endpoint(self):
+        cfg = self._cfg(llm_backend="ollama", llm_endpoint="http://custom:8080/v1")
+        llm = create_llm(cfg)
+        assert llm._endpoint == "http://custom:8080/v1"
+
+    def test_uses_custom_api_key(self):
+        cfg = self._cfg(llm_backend="ollama", llm_api_key="sk-custom")
+        llm = create_llm(cfg)
+        assert llm._api_key == "sk-custom"
+
+    def test_mlx_alias_maps_to_mlx_server(self):
+        cfg = self._cfg(llm_backend="mlx")
+        llm = create_llm(cfg)
+        assert llm._manage_process
+
+    def test_unknown_backend_raises(self):
+        cfg = self._cfg(llm_backend="unknown")
+        with pytest.raises(ValueError, match="unknown"):
+            create_llm(cfg)
+
+
+# =========================================================================
+# Module constants
+# =========================================================================
+
+
+class TestConstants:
+    def test_valid_backends(self):
+        assert VALID_BACKENDS == {"ollama", "llamacpp", "mlx_server"}
+
+    def test_backend_defaults_keys(self):
+        assert set(BACKEND_DEFAULTS.keys()) == VALID_BACKENDS

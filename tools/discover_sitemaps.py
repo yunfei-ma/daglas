@@ -527,9 +527,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.llm_backend:
             daglas_config.config.llm_backend = args.llm_backend
 
-        from daglas.lesson.llm import Llm
+        from daglas.lesson.llm import create_llm
 
-        llm_provider = Llm(data_dir=daglas_config.config.data_dir)
+        llm_provider = create_llm(daglas_config.config)
 
     result = discover_sitemaps(
         args.domain,

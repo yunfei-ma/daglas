@@ -11,5 +11,27 @@
     ".skills/uml_sequence.md",
     ".skills/uml_state_machine.md",
     ".skills/debug_investigation.md"
-  ]
+  ],
+  "model": "mlx/gemma-4-12b-coder",
+  "small_model": "mlx/llama-3.2-3b",
+  "provider": {
+    "mlx": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "MLX (local)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8081/v1"
+      },
+      "models": {
+        "gemma-4-12b-coder": {
+          "name": "Gemma 4 12B Coder (MLX)"
+        },
+        "gemma-4-26b-it": {
+          "name": "Gemma 4 26B IT (MLX)"
+        },
+        "llama-3.2-3b": {
+          "name": "Llama 3.2 3B Instruct (MLX)"
+        }
+      }
+    }
+  }
 }

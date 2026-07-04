@@ -17,7 +17,7 @@ from daglas.context_pool import ContextPool
 from daglas.email_sender_queue import EmailSenderQueue, MailItem
 from daglas.lesson.formatter import format_email
 from daglas.lesson.generator import generate_lesson
-from daglas.lesson.llm import Llm
+from daglas.lesson.llm import create_llm, Llm
 from daglas.subscriber_store import SubscriberStore
 
 
@@ -148,12 +148,6 @@ def _run_generate() -> None:
     sender_queue = EmailSenderQueue()
     sender_queue.start()
 
-    if cfg.imap_host:
-        receiver = _wire_email_receiver(cfg, sender_queue)
-        count = receiver.check_once()
-        logger = logging.getLogger("run")
-        logger.info("EmailReceiver: processed %d email(s)", count)
-
     required_for_http = ("ollama", "llamacpp")
     if (cfg.llm_backend or "") in required_for_http and not cfg.llm_endpoint:
         print("ERROR: llm_endpoint required for ollama/llamacpp backends")
@@ -185,7 +179,7 @@ def _run_generate() -> None:
     )
     print(f"Selected article: {best.get('title', '')[:70]}")
 
-    llm = Llm(data_dir=cfg.data_dir)
+    llm = create_llm(cfg)
 
     md_path = out_dir / "lesson.md"
     first_group = True
@@ -259,7 +253,12 @@ def _run_persistent() -> None:
     _shutdown_event = threading.Event()
     print("Dagläs running. Press Ctrl+C to quit.")
     try:
-        _shutdown_event.wait()
+        while not _shutdown_event.is_set():
+            if receiver and not receiver.is_running:
+                logger = logging.getLogger("run")
+                logger.error("EmailReceiver thread died — restarting")
+                receiver.start()
+            _shutdown_event.wait(timeout=60)
     except KeyboardInterrupt:
         print("\nShutting down...")
 
