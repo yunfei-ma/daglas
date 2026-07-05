@@ -21,8 +21,9 @@ class TestStartServer:
         )
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        with patch("subprocess.Popen") as mock_popen, patch(
-            "httpx.get", return_value=mock_resp
+        with (
+            patch("subprocess.Popen") as mock_popen,
+            patch("httpx.get", return_value=mock_resp),
         ):
             llm._start_server()
             mock_popen.assert_called_once_with(["echo", "hello"])
@@ -193,7 +194,7 @@ class TestPost:
         assert event.wait(timeout=2)
         assert received == ["world"]
 
-    def test_dispatches_error(self):
+    def test_dispatches_none_on_error(self):
         llm = Llm(endpoint="http://test", idle_timeout=0.1)
         event = threading.Event()
         received = []
@@ -202,7 +203,7 @@ class TestPost:
             llm.post("hello", callback=lambda t: [received.append(t), event.set()])
 
         assert event.wait(timeout=2)
-        assert received == ["fail"]
+        assert received == [None]
 
 
 # =========================================================================
@@ -217,11 +218,11 @@ class TestPromptSync:
             result = llm.prompt_sync(system="S", prompt="P")
             assert result == "hej"
 
-    def test_returns_error_text(self):
+    def test_returns_none_on_error(self):
         llm = Llm(endpoint="http://test", idle_timeout=0.1)
         with patch.object(llm, "_call_llm", side_effect=ValueError("fail")):
             result = llm.prompt_sync(system="S", prompt="P")
-            assert result == "fail"
+            assert result is None
 
 
 class TestPrompt:

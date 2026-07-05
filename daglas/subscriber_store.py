@@ -325,6 +325,8 @@ class SubscriberStore:
         system, user_template = _name_extraction_prompts()
         prompt = user_template.format(subject=subject, body=body, sender=sender)
         result = self._llm.prompt(system, prompt)
+        if result is None:
+            return sender.split("@")[0].title()
         result = result.strip()
         if not result or result.upper() == "NONE":
             return sender.split("@")[0].title()

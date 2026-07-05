@@ -15,7 +15,6 @@ import signal
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 PORT = 8090
 MODEL = "mlx-community/Llama-3.2-3B-Instruct-4bit"
@@ -48,13 +47,16 @@ def wait_for_server(pid: int, timeout: float = 120.0) -> bool:
         if get_rss_kb(pid) is None:
             return False  # process died
         try:
-            body = json.dumps({
-                "model": MODEL,
-                "messages": [{"role": "user", "content": "ping"}],
-                "max_tokens": 1,
-            }).encode()
+            body = json.dumps(
+                {
+                    "model": MODEL,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                }
+            ).encode()
             req = urllib.request.Request(
-                url, data=body,
+                url,
+                data=body,
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
@@ -71,13 +73,16 @@ def send_prompt(prompt: str) -> str:
     import urllib.request
 
     url = f"{BASE_URL}/chat/completions"
-    body = json.dumps({
-        "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 100,
-    }).encode()
+    body = json.dumps(
+        {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 100,
+        }
+    ).encode()
     req = urllib.request.Request(
-        url, data=body,
+        url,
+        data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -92,12 +97,19 @@ def start_server() -> subprocess.Popen:
     env["HF_HOME"] = HF_HOME
     return subprocess.Popen(
         [
-            sys.executable, "-m", "mlx_lm.server",
-            "--model", MODEL,
-            "--host", HOST,
-            "--port", str(PORT),
-            "--log-level", "INFO",
-            "--max-tokens", "4096",
+            sys.executable,
+            "-m",
+            "mlx_lm.server",
+            "--model",
+            MODEL,
+            "--host",
+            HOST,
+            "--port",
+            str(PORT),
+            "--log-level",
+            "INFO",
+            "--max-tokens",
+            "4096",
         ],
         env=env,
         stdout=subprocess.DEVNULL,
@@ -201,10 +213,10 @@ def main() -> None:
     print("=" * 60)
     print(f"  Server start model load:    {elapsed:.1f}s")
     print(f"  Memory while serving:       {rss / 1024:.0f} MB")
-    print(f"  Memory after SIGTERM:       reclaimed (process gone)")
+    print("  Memory after SIGTERM:       reclaimed (process gone)")
     print(f"  Restart model load:         {elapsed2:.1f}s")
     print(f"  Restart memory:             {rss2 / 1024:.0f} MB")
-    print(f"  Prompts served:             both runs worked")
+    print("  Prompts served:             both runs worked")
     print()
     print("Conclusion: SIGTERM frees all GPU memory (process exit")
     print("releases Metal buffers on Apple Silicon). A supervisor can")

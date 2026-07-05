@@ -276,6 +276,9 @@ def _judge_article(
     except Exception as e:
         return LlmVerdict(suitable=False, reason=f"LLM call failed: {e}")
 
+    if response is None:
+        return LlmVerdict(suitable=False, reason="LLM returned no response")
+
     response = response.strip().lower()
     if response.startswith("yes"):
         reason = response[3:].lstrip(": ").strip() if ":" in response else ""

@@ -62,7 +62,10 @@ def main() -> None:
     )
     gen_time = time.time() - t0
     print(f"  generated in {gen_time:.1f}s")
-    print(f"  output ({len(result)} chars): {result}")
+    if result is None:
+        print("  LLM returned None (error)")
+    else:
+        print(f"  output ({len(result)} chars): {result}")
 
     print("\n--- After generation ---")
     mem_active_gen = mx.get_active_memory()

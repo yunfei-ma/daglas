@@ -69,20 +69,20 @@ class Llm:
         self._idle_timeout = idle_timeout
 
         self._queue: queue.Queue = queue.Queue()
-        self._pending: dict[str, Callable[[str], None]] = {}
+        self._pending: dict[str, Callable[[str | None], None]] = {}
         self._process: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
 
-    def prompt(self, system: str = "", user: str = "") -> str:
+    def prompt(self, system: str = "", user: str = "") -> str | None:
         return self.prompt_sync(system=system, prompt=user)
 
     def post(
         self,
         prompt: str,
         system: str = "",
-        callback: Callable[[str], None] | None = None,
+        callback: Callable[[str | None], None] | None = None,
     ) -> None:
         """Enqueue a prompt. Returns immediately."""
         item_id = str(uuid.uuid4())
@@ -91,12 +91,12 @@ class Llm:
         self._queue.put({"id": item_id, "system": system, "prompt": prompt})
         self._ensure_worker()
 
-    def prompt_sync(self, system: str = "", prompt: str = "") -> str:
+    def prompt_sync(self, system: str = "", prompt: str = "") -> str | None:
         """Synchronous wrapper around post()."""
-        result: list[str] = []
+        result: list[str | None] = []
         event = threading.Event()
 
-        def done(text: str) -> None:
+        def done(text: str | None) -> None:
             result.append(text)
             event.set()
 
@@ -165,9 +165,9 @@ class Llm:
                 try:
                     text = self._call_llm(item.get("system", ""), item["prompt"])
                     self._dispatch(item["id"], text)
-                except Exception as exc:
+                except Exception:
                     logger.exception("LLM call failed")
-                    self._dispatch(item["id"], str(exc))
+                    self._dispatch(item["id"], None)
         finally:
             self._stop_server()
 
@@ -199,7 +199,7 @@ class Llm:
                     continue
                 raise
 
-    def _dispatch(self, item_id: str, text: str) -> None:
+    def _dispatch(self, item_id: str, text: str | None) -> None:
         callback = self._pending.pop(item_id, None)
         if callback:
             callback(text)

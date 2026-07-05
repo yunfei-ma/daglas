@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import daglas.config
+
+logger = logging.getLogger(__name__)
 
 
 def _read_prompt(name: str) -> str:
@@ -48,16 +51,8 @@ def generate_lesson(
         return None
 
     lesson_text = provider.prompt(system=system_prompt, user=user_prompt)
-    return _validate_lesson(lesson_text)
-
-
-_VALIDATION_ERROR_PREFIXES = ("[", "Error", "Traceback", "Exception")
-
-
-def _validate_lesson(text: str) -> str | None:
-    if not text or not text.strip():
+    if lesson_text is None:
         return None
-    stripped = text.strip()
-    if stripped.startswith(_VALIDATION_ERROR_PREFIXES):
+    if not lesson_text.strip():
         return None
-    return text
+    return lesson_text

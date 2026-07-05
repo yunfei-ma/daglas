@@ -45,56 +45,7 @@ class TestGenerateLesson:
             assert "beginner" in user_prompt
             assert "8" in user_prompt
 
-
-class TestValidateLesson:
-    def test_valid_lesson_passes(self):
-        from daglas.lesson.generator import _validate_lesson
-
-        text = "# Swedish Lesson\n\nHej!\n\nVocabulary..."
-        assert _validate_lesson(text) == text
-
-    def test_valid_swedish_text_passes(self):
-        from daglas.lesson.generator import _validate_lesson
-
-        text = "Här är dagens svenska lektion!\n\nHej och välkommen."
-        assert _validate_lesson(text) == text
-
-    def test_errno61_returns_none(self):
-        from daglas.lesson.generator import _validate_lesson
-
-        assert _validate_lesson("[Errno 61] Connection refused") is None
-
-    def test_error_prefix_returns_none(self):
-        from daglas.lesson.generator import _validate_lesson
-
-        assert _validate_lesson("Error: model not found") is None
-
-    def test_traceback_returns_none(self):
-        from daglas.lesson.generator import _validate_lesson
-
-        assert (
-            _validate_lesson(
-                'Traceback (most recent call last):\n  File "llm.py", line 321'
-            )
-            is None
-        )
-
-    def test_exception_returns_none(self):
-        from daglas.lesson.generator import _validate_lesson
-
-        assert _validate_lesson("Exception: out of memory") is None
-
-    def test_empty_string_returns_none(self):
-        from daglas.lesson.generator import _validate_lesson
-
-        assert _validate_lesson("") is None
-
-    def test_whitespace_only_returns_none(self):
-        from daglas.lesson.generator import _validate_lesson
-
-        assert _validate_lesson("  ") is None
-
-    def test_generate_lesson_filters_error(self, tmp_path: Path):
+    def test_provider_none_returns_none(self, tmp_path: Path):
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
         (prompts_dir / "system.md").write_text("System prompt")
@@ -103,6 +54,6 @@ class TestValidateLesson:
         with patch("daglas.config.config") as mock_config:
             mock_config.prompts_dir = str(prompts_dir)
             provider = MagicMock()
-            provider.prompt.return_value = "[Errno 61] Connection refused"
+            provider.prompt.return_value = None
             result = generate_lesson(provider, [])
             assert result is None
