@@ -71,14 +71,6 @@ class TestPush:
         data = json.loads(q._immediate_path.read_text().splitlines()[0])
         assert data["queued_at"] != ""
 
-    def test_push_immediate_triggers_notify(self, tmp_path: Path):
-        q = _make_queue(tmp_path)
-        q._immediate_notify.clear()
-        q.push(
-            MailItem(to=["a@b.com"], subject="hi", text_body="", send_at="immediate")
-        )
-        assert q._immediate_notify.is_set()
-
     def test_push_scheduled_maintains_sort_order(self, tmp_path: Path):
         q = _make_queue(tmp_path)
         q.push(
@@ -287,14 +279,35 @@ class TestDelete:
         q.delete(UUID("11111111-1111-4111-8111-111111111111"))
 
 
-class TestLifecycle:
-    def test_start_stop(self):
-        q = EmailSenderQueue()
-        q.start()
-        assert q._immediate_thread is not None
-        assert q._immediate_thread.is_alive()
-        assert q._scheduled_thread is not None
-        assert q._scheduled_thread.is_alive()
-        q.stop()
-        assert not q._immediate_thread.is_alive()
-        assert not q._scheduled_thread.is_alive()
+class TestDispatch:
+    def test_dispatch_empty_returns_zero(self, tmp_path: Path):
+        q = _make_queue(tmp_path)
+        assert q.dispatch_due() == 0
+
+    def test_dispatch_immediate(self, tmp_path: Path):
+        q = _make_queue(tmp_path)
+        q.push(
+            MailItem(to=["a@b.com"], subject="hi", text_body="", send_at="immediate")
+        )
+        count = q.dispatch_due()
+        assert count == 1
+        assert not q._immediate_path.is_file()
+
+    def test_dispatch_scheduled(self, tmp_path: Path):
+        q = _make_queue(tmp_path)
+        q._scheduled_path.write_text(
+            json.dumps(
+                {
+                    "request_id": "11111111-1111-4111-8111-111111111111",
+                    "to": ["a@b.com"],
+                    "subject": "due",
+                    "text_body": "hello",
+                    "html_body": "",
+                    "send_at": datetime.now(timezone.utc).isoformat(),
+                    "queued_at": "",
+                }
+            )
+            + "\n"
+        )
+        count = q.dispatch_due()
+        assert count == 1

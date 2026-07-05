@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import argparse
 import logging
 import logging.handlers
 import os
 import sys
-import threading
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 
 from daglas import config as daglas_config
@@ -15,10 +13,13 @@ from daglas.config import load_config
 from daglas.context_fetcher import fetch_context
 from daglas.context_pool import ContextPool
 from daglas.email_sender_queue import EmailSenderQueue, MailItem
+from daglas.heartbeat import Heartbeat
 from daglas.lesson.formatter import format_email
 from daglas.lesson.generator import generate_lesson
-from daglas.lesson.llm import create_llm, Llm
+from daglas.lesson.llm import create_llm
 from daglas.subscriber_store import SubscriberStore
+
+logger = logging.getLogger(__name__)
 
 
 def _wire_email_receiver(cfg, sender_queue):
@@ -59,223 +60,92 @@ def _send_admin_alert(
     )
 
 
-def _resolve_send_time(time_str: str) -> str:
-    if time_str == "immediate":
-        return "immediate"
-    try:
-        hour, minute = time_str.split(":")
-        now = datetime.now(timezone.utc)
-        send_dt = now.replace(
-            hour=int(hour), minute=int(minute), second=0, microsecond=0
-        )
-        if send_dt <= now:
-            send_dt += timedelta(days=1)
-        return send_dt.isoformat()
-    except (ValueError, TypeError):
-        logger = logging.getLogger("run")
-        logger.warning("Invalid send_time=%r — falling back to immediate", time_str)
-        return "immediate"
+def _run_loop(heartbeat: Heartbeat, actions: dict[str, Callable[[], None]]) -> None:
+    while not heartbeat._shutdown.is_set():
+        for name in heartbeat.tick():
+            handler = actions.get(name)
+            if handler is None:
+                logger.warning("Unknown scheduled action: %s", name)
+                continue
+            try:
+                handler()
+                heartbeat.set_complete(name)
+            except Exception:
+                logger.exception("Action %s failed — retry on next tick", name)
+        heartbeat.run_due_pollers()
+        heartbeat._shutdown.wait(timeout=1)
 
 
-def _queue_lessons(
-    llm: Llm,
-    articles: list[dict],
-    send_at: str,
-    sender_queue: EmailSenderQueue,
-) -> None:
-    cfg = daglas_config.config
-    store = SubscriberStore()
-    subscribers = store.list()
-    if not subscribers:
-        print("No subscribers — skipping lesson dispatch.")
-        return
+def _make_fetch_action(cfg, sender_queue) -> Callable[[], None]:
+    def fetch() -> None:
+        pool = ContextPool()
+        pool.clear()
+        fetch_context(cfg.sources, pool)
+        articles = pool.retrieve_articles()
+        best = max(articles, key=lambda a: a.get("score") or 0)
+        llm = create_llm(cfg)
 
-    resolved = _resolve_send_time(send_at)
+        store = SubscriberStore()
+        subscribers = store.list()
+        if not subscribers:
+            logger.info("No subscribers — skipping lesson dispatch.")
+            return
 
-    groups: dict[tuple[str, int], list[str]] = defaultdict(list)
-    for sub in subscribers:
-        group_level = sub.level or (cfg.lesson_level if cfg else "beginner")
-        group_vcount = sub.vocab_count or (cfg.vocab_count if cfg else 5)
-        groups[(group_level, group_vcount)].append(sub.email)
+        groups: dict[tuple[str, int], list[str]] = {}
+        for sub in subscribers:
+            group_level = sub.level or (cfg.lesson_level if cfg else "beginner")
+            group_vcount = sub.vocab_count or (cfg.vocab_count if cfg else 5)
+            key = (group_level, group_vcount)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(sub.email)
 
-    logger = logging.getLogger("run")
-    for (group_level, group_vcount), emails in groups.items():
-        lesson_text = generate_lesson(
-            llm,
-            articles,
-            level=group_level,
-            vocab_count=group_vcount,
-        )
-        if not lesson_text:
-            logger.error(
-                "Lesson generation returned empty for group level=%s vcount=%d",
+        for (group_level, group_vcount), emails in groups.items():
+            lesson_text = generate_lesson(
+                llm,
+                [best],
+                level=group_level,
+                vocab_count=group_vcount,
+            )
+            if not lesson_text:
+                logger.error(
+                    "Lesson generation returned empty for group level=%s vcount=%d",
+                    group_level,
+                    group_vcount,
+                )
+                article_info = "\n".join(
+                    a.get("title", "") for a in [best] if a.get("title")
+                )
+                _send_admin_alert(
+                    sender_queue,
+                    cfg,
+                    "Lesson generation failed",
+                    f"Group: level={group_level} vcount={group_vcount}\n"
+                    f"Articles:\n{article_info}",
+                )
+                continue
+
+            email = format_email(lesson_text)
+            sender_queue.push(
+                MailItem(
+                    to=emails,
+                    subject=email.subject,
+                    text_body=email.text_body,
+                    html_body=email.html_body,
+                    send_at="immediate",
+                )
+            )
+            logger.info(
+                "Lesson queued: group=(level=%s vcount=%d) recipients=%d",
                 group_level,
                 group_vcount,
+                len(emails),
             )
-            article_info = "\n".join(
-                a.get("title", "") for a in articles if a.get("title")
-            )
-            _send_admin_alert(
-                sender_queue,
-                cfg,
-                "Lesson generation failed",
-                f"Group: level={group_level} vcount={group_vcount}\n"
-                f"Articles:\n{article_info}",
-            )
-            continue
 
-        email = format_email(lesson_text)
-        sender_queue.push(
-            MailItem(
-                to=emails,
-                subject=email.subject,
-                text_body=email.text_body,
-                html_body=email.html_body,
-                send_at=resolved,
-            )
-        )
-        logger.info(
-            "Lesson queued: group=(level=%s vcount=%d) recipients=%d send_at=%s",
-            group_level,
-            group_vcount,
-            len(emails),
-            resolved,
-        )
-
-
-def _run_generate() -> None:
-    cfg = daglas_config.config
-    sender_queue = EmailSenderQueue()
-    sender_queue.start()
-
-    required_for_http = ("ollama", "llamacpp")
-    if (cfg.llm_backend or "") in required_for_http and not cfg.llm_endpoint:
-        print("ERROR: llm_endpoint required for ollama/llamacpp backends")
-        sys.exit(1)
-
-    pool = ContextPool()
-    pool.clear()
-
-    if cfg.sources:
-        print(f"Fetching context from {len(cfg.sources)} source(s)...")
-        result = fetch_context(cfg.sources, pool)
-        for err in result.errors:
-            print(f"  WARN: {err}")
-        print(f"Fetched {len(result.articles)} article(s)")
-    else:
-        print("No sources configured in config.yaml")
-
-    articles = pool.retrieve_articles()
-    if not articles:
-        print("No articles in context pool.")
-        sys.exit(1)
-
-    best = max(articles, key=lambda a: a.get("score") or 0)
-    out_dir = Path("output")
-    out_dir.mkdir(exist_ok=True)
-    sel_path = out_dir / "selected.txt"
-    sel_path.write_text(
-        f"Title: {best.get('title', '')}\nURL: {best.get('url', '')}\n\n{best.get('body', '')}"
-    )
-    print(f"Selected article: {best.get('title', '')[:70]}")
-
-    llm = create_llm(cfg)
-
-    md_path = out_dir / "lesson.md"
-    first_group = True
-    store = SubscriberStore()
-    subscribers = store.list()
-    if not subscribers:
-        print("No subscribers — skipping lesson dispatch.")
-        sender_queue.stop()
-        return
-
-    groups: dict[tuple[str, int], list[str]] = defaultdict(list)
-    for sub in subscribers:
-        group_level = sub.level or (cfg.lesson_level if cfg else "beginner")
-        group_vcount = sub.vocab_count or (cfg.vocab_count if cfg else 5)
-        groups[(group_level, group_vcount)].append(sub.email)
-
-    resolved = _resolve_send_time(cfg.send_time)
-    for (group_level, group_vcount), emails in groups.items():
-        lesson_text = generate_lesson(
-            llm,
-            [best],
-            level=group_level,
-            vocab_count=group_vcount,
-        )
-        if not lesson_text:
-            print("ERROR: lesson generation returned empty result")
-            _send_admin_alert(
-                sender_queue,
-                cfg,
-                "Lesson generation failed",
-                f"Article: {best.get('title', '')}\n"
-                f"URL: {best.get('url', '')}\n"
-                f"Group: level={group_level} vcount={group_vcount}",
-            )
-            continue
-
-        email = format_email(lesson_text)
-
-        if first_group:
-            md_path.write_text(email.text_body)
-            print(f"Saved to {md_path}")
-            first_group = False
-
-        sender_queue.push(
-            MailItem(
-                to=emails,
-                subject=email.subject,
-                text_body=email.text_body,
-                html_body=email.html_body,
-                send_at=resolved,
-            )
-        )
-        print(
-            f"Lesson queued for group (level={group_level} vcount={group_vcount}): "
-            f"{len(emails)} recipient(s)"
-        )
-
-    sender_queue.stop()
-
-
-def _run_persistent() -> None:
-    cfg = daglas_config.config
-    sender_queue = EmailSenderQueue()
-    sender_queue.start()
-
-    receiver = None
-    if cfg.imap_host:
-        receiver = _wire_email_receiver(cfg, sender_queue)
-        receiver.start()
-
-    _shutdown_event = threading.Event()
-    print("Dagläs running. Press Ctrl+C to quit.")
-    try:
-        while not _shutdown_event.is_set():
-            if receiver and not receiver.is_running:
-                logger = logging.getLogger("run")
-                logger.error("EmailReceiver thread died — restarting")
-                receiver.start()
-            _shutdown_event.wait(timeout=60)
-    except KeyboardInterrupt:
-        print("\nShutting down...")
-
-    if receiver:
-        receiver.stop()
-    sender_queue.stop()
+    return fetch
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Dagläs — Daily Swedish Lesson")
-    parser.add_argument(
-        "--generate",
-        action="store_true",
-        help="Run full lesson lifecycle (fetch, generate, queue) and exit",
-    )
-    args = parser.parse_args()
-
     level = getattr(
         logging, os.environ.get("DAGLAS_LOG_LEVEL", "INFO").upper(), logging.INFO
     )
@@ -304,10 +174,31 @@ def main() -> None:
     logging.getLogger("trafilatura").setLevel(logging.WARNING)
     daglas_config.config = load_config()
 
-    if args.generate:
-        _run_generate()
-    else:
-        _run_persistent()
+    cfg = daglas_config.config
+    heartbeat = Heartbeat()
+    sender_queue = EmailSenderQueue()
+
+    if cfg.imap_host:
+        receiver = _wire_email_receiver(cfg, sender_queue)
+        heartbeat.add_poller("imap", cfg.email_receiver_poll_interval, receiver.poll)
+
+    heartbeat.add_poller(
+        "sender_queue",
+        cfg.email_sender_immediate_empty_interval,
+        sender_queue.dispatch_due,
+    )
+
+    actions: dict[str, Callable[[], None]] = {
+        "fetch": _make_fetch_action(cfg, sender_queue),
+        "send": sender_queue.dispatch_due,
+    }
+
+    logger.info("Dagläs heartbeat started")
+    try:
+        _run_loop(heartbeat, actions)
+    except KeyboardInterrupt:
+        heartbeat.stop()
+        logger.info("Dagläs heartbeat stopped")
 
 
 if __name__ == "__main__":

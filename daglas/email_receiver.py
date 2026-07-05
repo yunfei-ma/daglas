@@ -3,8 +3,6 @@ from __future__ import annotations
 import email
 import imaplib
 import logging
-import threading
-import time
 from email.utils import parseaddr
 
 import daglas.config
@@ -22,54 +20,7 @@ class EmailReceiver:
         self._imap_port = cfg.imap_port if cfg else 993
         self._imap_user = cfg.imap_user if cfg else ""
         self._imap_password = cfg.imap_password if cfg else ""
-        self._poll_interval = cfg.email_receiver_poll_interval if cfg else 300
-        logger.debug(
-            "EmailReceiver poll_interval=%ds imap_host=%s",
-            self._poll_interval,
-            self._imap_host,
-        )
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    @property
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-    def start(self) -> None:
-        if self.is_running:
-            logger.warning("EmailReceiver is already running")
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        logger.info("EmailReceiver started")
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=5)
-        logger.info("EmailReceiver stopped")
-
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                start = time.monotonic()
-                count = self.check_once()
-                if count:
-                    logger.info("Pushed %d email(s) to queue", count)
-                elapsed = time.monotonic() - start
-                if not self._stop_event.is_set():
-                    sleep_time = max(0, self._poll_interval - elapsed)
-                    logger.debug(
-                        "EmailReceiver cycle: check_took=%.2fs "
-                        "poll_interval=%ds next_check_in=%.2fs",
-                        elapsed,
-                        self._poll_interval,
-                        sleep_time,
-                    )
-                    self._stop_event.wait(timeout=sleep_time)
-            except Exception:
-                logger.exception("EmailReceiver._run: unhandled exception, restarting")
+        logger.debug("EmailReceiver imap_host=%s", self._imap_host)
 
     def _connect(self):
         conn = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
@@ -78,7 +29,8 @@ class EmailReceiver:
         conn.select("INBOX")
         return conn
 
-    def _get_body(self, msg) -> str:
+    @staticmethod
+    def _get_body(msg) -> str:
         parts: list[str] = []
         if msg.is_multipart():
             for part in msg.walk():
@@ -141,7 +93,7 @@ class EmailReceiver:
                     return candidate
         return None
 
-    def check_once(self) -> int:
+    def poll(self) -> int:
         logger.info("Checking for new email...")
         count = 0
         try:
@@ -162,26 +114,3 @@ class EmailReceiver:
             except Exception:
                 pass
         return count
-
-    def run_loop(self, max_iterations: int | None = None) -> None:
-        iterations = 0
-        while (
-            max_iterations is None or iterations < max_iterations
-        ) and not self._stop_event.is_set():
-            start = time.monotonic()
-            count = self.check_once()
-            if count:
-                logger.info("Pushed %d email(s) to queue", count)
-            elapsed = time.monotonic() - start
-            iterations += 1
-            logger.debug(
-                "EmailReceiver cycle %d: check_took=%.2fs poll_interval=%ds",
-                iterations,
-                elapsed,
-                self._poll_interval,
-            )
-            if (
-                max_iterations is None or iterations < max_iterations
-            ) and not self._stop_event.is_set():
-                sleep_time = max(0, self._poll_interval - elapsed)
-                time.sleep(sleep_time)

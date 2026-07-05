@@ -1,6 +1,5 @@
 from unittest.mock import MagicMock, patch
 
-import daglas.config as daglas_config
 from daglas.email_receiver import EmailReceiver
 
 
@@ -34,8 +33,8 @@ class MockIMAP:
         pass
 
 
-class TestCheckOnce:
-    def test_check_once_pushes_to_queue(self, tmp_path):
+class TestPoll:
+    def test_poll_pushes_to_queue(self, tmp_path):
         queue = MagicMock()
         receiver = EmailReceiver(queue)
 
@@ -47,7 +46,7 @@ class TestCheckOnce:
             return conn
 
         with patch.object(receiver, "_connect", mock_connect):
-            count = receiver.check_once()
+            count = receiver.poll()
         assert count == 1
         queue.push.assert_called_once()
         args = queue.push.call_args
@@ -56,7 +55,7 @@ class TestCheckOnce:
         assert args[0][1].subject == "hello"
         assert args[0][1].body == "world"
 
-    def test_check_once_marks_seen(self, tmp_path):
+    def test_poll_marks_seen(self, tmp_path):
         queue = MagicMock()
         receiver = EmailReceiver(queue)
 
@@ -66,12 +65,12 @@ class TestCheckOnce:
         }
 
         with patch.object(receiver, "_connect", lambda: conn):
-            receiver.check_once()
+            receiver.poll()
 
         assert len(conn.stored_flags) == 1
         assert conn.stored_flags[0][0] == b"1"
 
-    def test_check_once_no_unseen(self, tmp_path):
+    def test_poll_no_unseen(self, tmp_path):
         queue = MagicMock()
         receiver = EmailReceiver(queue)
 
@@ -79,11 +78,11 @@ class TestCheckOnce:
             return MockIMAP()
 
         with patch.object(receiver, "_connect", mock_connect):
-            count = receiver.check_once()
+            count = receiver.poll()
         assert count == 0
         queue.push.assert_not_called()
 
-    def test_check_once_imap_unreachable(self, tmp_path):
+    def test_poll_imap_unreachable(self, tmp_path):
         queue = MagicMock()
         receiver = EmailReceiver(queue)
 
@@ -91,11 +90,11 @@ class TestCheckOnce:
             raise ConnectionError("Connection refused")
 
         with patch.object(receiver, "_connect", broken_connect):
-            count = receiver.check_once()
+            count = receiver.poll()
         assert count == 0
         queue.push.assert_not_called()
 
-    def test_check_once_bad_message_skips(self, tmp_path):
+    def test_poll_bad_message_skips(self, tmp_path):
         queue = MagicMock()
         receiver = EmailReceiver(queue)
 
@@ -108,7 +107,7 @@ class TestCheckOnce:
             return conn
 
         with patch.object(receiver, "_connect", mock_connect):
-            count = receiver.check_once()
+            count = receiver.poll()
         assert count == 1
         assert queue.push.call_count == 1
 
@@ -123,107 +122,10 @@ class TestCheckOnce:
             return conn
 
         with patch.object(receiver, "_connect", mock_connect):
-            receiver.check_once()
+            receiver.poll()
 
         pushed = queue.push.call_args[0][1]
         assert pushed.sender == "alice@example.com"
         assert pushed.subject == "hello"
         assert pushed.body == "body text"
         assert pushed.raw_bytes == raw_bytes
-
-
-class TestRunLoop:
-    def test_run_loop_interval_timing(self, tmp_path):
-        queue = MagicMock()
-        mock_cfg = MagicMock(email_receiver_poll_interval=0.02)
-        with patch.object(daglas_config, "config", mock_cfg):
-            receiver = EmailReceiver(queue)
-
-        with (
-            patch.object(receiver, "_connect", lambda: MockIMAP()),
-            patch("time.sleep") as mock_sleep,
-        ):
-            receiver.run_loop(max_iterations=2)
-
-        assert mock_sleep.call_count == 1
-        sleep_arg = mock_sleep.call_args[0][0]
-        assert 0 <= sleep_arg <= 0.02
-
-    def test_run_loop_no_sleep_when_poll_exceeds_interval(self, tmp_path):
-        queue = MagicMock()
-        mock_cfg = MagicMock(email_receiver_poll_interval=0.01)
-        with patch.object(daglas_config, "config", mock_cfg):
-            receiver = EmailReceiver(queue)
-
-        elapsed_seconds = 100.0
-        monotonic_values = [0.0, elapsed_seconds, elapsed_seconds, elapsed_seconds]
-        call_count = 0
-
-        def fake_monotonic():
-            nonlocal call_count
-            val = monotonic_values[call_count]
-            call_count += 1
-            return val
-
-        with (
-            patch.object(receiver, "_connect", lambda: MockIMAP()),
-            patch("time.monotonic", fake_monotonic),
-            patch("time.sleep") as mock_sleep,
-        ):
-            receiver.run_loop(max_iterations=2)
-
-        assert mock_sleep.call_count == 1
-        assert mock_sleep.call_args[0][0] == 0.0
-
-
-class TestLifecycle:
-    def test_is_running_after_start(self):
-        queue = MagicMock()
-        receiver = EmailReceiver(queue)
-
-        with patch.object(receiver, "_connect", lambda: MockIMAP()):
-            receiver.start()
-        assert receiver.is_running is True
-        receiver.stop()
-
-    def test_stop_clears_is_running(self):
-        queue = MagicMock()
-        receiver = EmailReceiver(queue)
-
-        with patch.object(receiver, "_connect", lambda: MockIMAP()):
-            receiver.start()
-        assert receiver.is_running is True
-        receiver.stop()
-        assert receiver.is_running is False
-
-    def test_start_idempotent(self):
-        queue = MagicMock()
-        receiver = EmailReceiver(queue)
-
-        with (
-            patch.object(receiver, "_connect", lambda: MockIMAP()),
-            patch.object(receiver, "check_once", return_value=0),
-        ):
-            receiver.start()
-            thread_id = id(receiver._thread)
-            receiver.start()
-            assert id(receiver._thread) == thread_id
-            receiver.stop()
-
-    def test_stop_without_start_is_safe(self):
-        queue = MagicMock()
-        receiver = EmailReceiver(queue)
-        receiver.stop()
-        assert receiver.is_running is False
-
-    def test_run_loop_obeys_stop_event(self):
-        queue = MagicMock()
-        mock_cfg = MagicMock(email_receiver_poll_interval=0.01)
-        with patch.object(daglas_config, "config", mock_cfg):
-            receiver = EmailReceiver(queue)
-
-        with patch.object(receiver, "_connect", lambda: MockIMAP()):
-            receiver.start()
-            receiver.stop()
-
-        assert receiver.is_running is False

@@ -11,6 +11,11 @@ LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 LOG_DIR = Path.home() / "Library" / "Logs" / "daglas"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+HEARTBEAT_LABEL = "com.daglas.heartbeat"
+HEARTBEAT_PLIST = LAUNCH_AGENTS_DIR / f"{HEARTBEAT_LABEL}.plist"
+
+logger = logging.getLogger("install_launchd")
+
 
 def _resolve_python() -> Path:
     candidates = [Path(p) / "python3" for p in ["/opt/homebrew/bin", "/usr/local/bin"]]
@@ -60,14 +65,6 @@ def _resolve_python() -> Path:
 
 PYTHON_BIN = _resolve_python()
 
-LESSON_GENERATOR_LABEL = "com.daglas.lessonGenerator"
-RUNNER_LABEL = "com.daglas.runner"
-
-LESSON_GENERATOR_PLIST = LAUNCH_AGENTS_DIR / f"{LESSON_GENERATOR_LABEL}.plist"
-RUNNER_PLIST = LAUNCH_AGENTS_DIR / f"{RUNNER_LABEL}.plist"
-
-logger = logging.getLogger("install_launchd")
-
 
 def _check_macos() -> None:
     if sys.platform != "darwin":
@@ -80,27 +77,15 @@ def _ensure_dirs() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _build_lesson_generator_plist() -> dict:
+def _build_heartbeat_plist() -> dict:
     return {
-        "Label": LESSON_GENERATOR_LABEL,
-        "ProgramArguments": [str(PYTHON_BIN), "-m", "daglas.run", "--generate"],
-        "StartInterval": 1800,
-        "WorkingDirectory": str(PROJECT_ROOT),
-        "StandardOutPath": str(LOG_DIR / "lesson_generator.log"),
-        "StandardErrorPath": str(LOG_DIR / "lesson_generator.err"),
-        "EnvironmentVariables": {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-    }
-
-
-def _build_runner_plist() -> dict:
-    return {
-        "Label": RUNNER_LABEL,
+        "Label": HEARTBEAT_LABEL,
         "ProgramArguments": [str(PYTHON_BIN), "-m", "daglas.run"],
         "RunAtLoad": True,
         "KeepAlive": True,
         "WorkingDirectory": str(PROJECT_ROOT),
-        "StandardOutPath": str(LOG_DIR / "runner.log"),
-        "StandardErrorPath": str(LOG_DIR / "runner.err"),
+        "StandardOutPath": str(LOG_DIR / "heartbeat.log"),
+        "StandardErrorPath": str(LOG_DIR / "heartbeat.err"),
         "EnvironmentVariables": {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
     }
 
@@ -111,13 +96,12 @@ def _write_plist(path: Path, plist: dict) -> None:
     logger.info("Wrote %s", path)
 
 
-def _unload_if_exists(path: Path) -> None:
-    if path.is_file():
-        subprocess.run(
-            ["launchctl", "unload", str(path)],
-            check=False,
-            capture_output=True,
-        )
+def _unload_if_exists(label: str) -> None:
+    subprocess.run(
+        ["launchctl", "unload", str(LAUNCH_AGENTS_DIR / f"{label}.plist")],
+        check=False,
+        capture_output=True,
+    )
 
 
 def _load_plist(path: Path) -> None:
@@ -136,21 +120,16 @@ def install() -> None:
     _check_macos()
     _ensure_dirs()
 
-    lesson_generator = _build_lesson_generator_plist()
-    runner = _build_runner_plist()
+    _unload_if_exists("com.daglas.lessonGenerator")
+    _unload_if_exists("com.daglas.runner")
+    _unload_if_exists(HEARTBEAT_LABEL)
 
-    _write_plist(LESSON_GENERATOR_PLIST, lesson_generator)
-    _write_plist(RUNNER_PLIST, runner)
-
-    _unload_if_exists(LESSON_GENERATOR_PLIST)
-    _unload_if_exists(RUNNER_PLIST)
-
-    _load_plist(LESSON_GENERATOR_PLIST)
-    _load_plist(RUNNER_PLIST)
+    plist = _build_heartbeat_plist()
+    _write_plist(HEARTBEAT_PLIST, plist)
+    _load_plist(HEARTBEAT_PLIST)
 
     print("Installed:")
-    print(f"  {LESSON_GENERATOR_LABEL}  — fires every 30 min")
-    print(f"  {RUNNER_LABEL}              — persistent (KeepAlive + RunAtLoad)")
+    print(f"  {HEARTBEAT_LABEL}  — persistent (KeepAlive + RunAtLoad)")
     print(f"Logs: {LOG_DIR}")
 
 
