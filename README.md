@@ -1,8 +1,8 @@
 # Dagläs — Daily Swedish Lessons
 
 Generate one structured Swedish lesson email every morning, grounded in
-real-world, current context. Runs locally via a local LLM (ollama, mlx,
-llama.cpp).
+real-world, current context. Runs locally on macOS via MLX, ollama, or
+llama.cpp.
 
 ## Architecture
 
@@ -19,7 +19,8 @@ graph LR
     Site{{svt.se / dn.se}}:::external
     Fetcher[ContextFetcher]:::core
     Pool[(ContextPool)]:::store
-    LLM{{Ollama / mlx / llama.cpp}}:::external
+    Mlx[MlxModel]:::core
+    Olly{{Ollama / llama.cpp}}:::external
     Generator[LessonGenerator]:::core
     Formatter[Formatter]:::core
     Sender[EmailSenderQueue]:::core
@@ -29,8 +30,10 @@ graph LR
     Site -->|articles| Fetcher
     Fetcher -->|store| Pool
     Pool -->|context| Generator
-    Generator -->|prompt| LLM
-    LLM -->|lesson| Generator
+    Generator -->|prompt| Mlx
+    Mlx -->|lesson| Generator
+    Generator -->|prompt| Olly
+    Olly -->|lesson| Generator
     Generator -->|text| Formatter
     Formatter -->|email| Sender
     Sender -->|dispatch| SMTP
@@ -60,7 +63,9 @@ graph LR
 ## Requirements
 
 - Python 3.10+
-- A local LLM server (e.g. [ollama](https://ollama.com), mlx, llama.cpp)
+- A local LLM: [mlx](https://github.com/ml-explore/mlx) (macOS, default) or
+  an ollama/llama.cpp server
+- For the MLX backend: `pip install mlx-lm` (Apple Silicon only)
 
 ## Setup
 
@@ -116,10 +121,12 @@ All settings in `config.yaml` (copy from `daglas/config_default.yaml`).
 ### Core
 
 | Key | Default | Description |
-|---|---|---|---|
-| `llm_endpoint` | `""` | LLM API endpoint (e.g. `http://localhost:11434/v1`) |
-| `llm_model` | `""` | Model name (e.g. `gemma4:latest`) |
-| `llm_api_key` | `""` | API key if required |
+|---|---|---|
+| `llm_backend` | `mlx` | Backend: `mlx` (in-process MLX on Apple Silicon), `ollama`, `llamacpp` |
+| `llm_endpoint` | `""` | API endpoint for ollama/llamacpp (e.g. `http://localhost:11434/v1`). Not used by MLX backend |
+| `llm_model` | `""` | Model name (e.g. `mlx-community/Llama-3.2-3B-Instruct-4bit`, `gemma4:latest`) |
+| `llm_api_key` | `""` | API key if required (ollama/llamacpp) |
+| `hf_cache_dir` | `""` | HuggingFace cache dir for MLX model download (expands `~`) |
 | `article_word_limit` | `100` | Word limit per article displayed in lesson |
 | `lesson_level` | `beginner` | Target difficulty for generated lesson |
 | `vocab_count` | `5` | Vocabulary words per lesson |
@@ -171,7 +178,7 @@ sources:
 ### Sender queue
 
 | Key | Default | Description |
-|---|---|---|---|
+|---|---|---|
 | `email_sender_immediate_success_backoff` | `5` | Backoff (s) after successful immediate send |
 | `email_sender_immediate_empty_interval` | `20` | Poll interval (s) when immediate queue is empty |
 | `email_sender_scheduled_success_backoff` | `5` | Backoff (s) after successful scheduled send |
@@ -203,7 +210,8 @@ daglas/
 └── lesson/
     ├── generator.py           # Prompt assembly, context truncation
     ├── formatter.py           # Email dataclass, markdown→HTML
-    └── llm.py                 # Provider abstraction (ollama, mlx, llama.cpp)
+    ├── llm.py                 # Provider abstraction, create_llm() factory
+    └── llm_mlx.py             # MlxModel: in-process MLX inference, threaded queue
 pyproject.toml                  # PEP 621 package config (version, deps, entry point)
 prompts/                       # Versioned LLM prompt templates
 scripts/
@@ -225,12 +233,3 @@ pytest                           # all tests
 pytest tests/test_context_fetcher.py -v  # single module
 ruff check . && ruff format .    # lint and format
 ```
-
-## Workflow conventions
-
-See `AGENTS.md` for full process rules. Key points:
-
-- **Task doc first** — read the module's spec in `tasks/` before writing code.
-- **No cloud dependencies** — prefer ollama, mlx, llama.cpp over API services.
-- **Secrets in `config.yaml`** only — never in source code.
-- **Local-first** — all processing happens on your machine.
