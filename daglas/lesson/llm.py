@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import queue
-import subprocess
 import threading
 import time
 import uuid
@@ -10,9 +9,11 @@ from collections.abc import Callable
 
 import httpx
 
+from daglas.lesson.llm_mlx import MlxModel, ModelState  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
-VALID_BACKENDS = frozenset({"ollama", "llamacpp", "mlx_server"})
+VALID_BACKENDS = frozenset({"ollama", "llamacpp", "mlx_local"})
 
 BACKEND_DEFAULTS: dict[str, dict] = {
     "ollama": {
@@ -23,30 +24,18 @@ BACKEND_DEFAULTS: dict[str, dict] = {
         "endpoint": "http://localhost:8080/v1",
         "model": "",
     },
-    "mlx_server": {
-        "endpoint": "http://localhost:8081/v1",
+    "mlx_local": {
         "model": "mlx-community/Llama-3.2-3B-Instruct-4bit",
-        "server_cmd": [
-            "mlx_lm.server",
-            "--model",
-            "mlx-community/Llama-3.2-3B-Instruct-4bit",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8081",
-        ],
     },
 }
 
+_BACKEND_ALIASES = {"mlx": "mlx_local"}
+
 
 class Llm:
-    """Prompt queue with HTTP dispatch and optional server lifecycle.
+    """Prompt queue with HTTP dispatch to an external LLM server.
 
-    For mlx_server backend: manages mlx_lm.server subprocess — spawn
-    before worker loop, SIGTERM after loop.
-
-    For ollama/llamacpp backends: no process management; server
-    assumed to be running externally. Start/stop are no-ops.
+    For ollama/llamacpp backends: server assumed to be running externally.
     """
 
     def __init__(
@@ -56,21 +45,16 @@ class Llm:
         model: str = "",
         api_key: str = "",
         max_tokens: int = 2048,
-        manage_process: bool = False,
-        server_cmd: list[str] | None = None,
         idle_timeout: float = 20.0,
     ):
         self._endpoint = endpoint.rstrip("/")
         self._model = model
         self._api_key = api_key
         self._max_tokens = max_tokens
-        self._manage_process = manage_process
-        self._server_cmd = server_cmd or []
         self._idle_timeout = idle_timeout
 
         self._queue: queue.Queue = queue.Queue()
         self._pending: dict[str, Callable[[str | None], None]] = {}
-        self._process: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
@@ -84,7 +68,6 @@ class Llm:
         system: str = "",
         callback: Callable[[str | None], None] | None = None,
     ) -> None:
-        """Enqueue a prompt. Returns immediately."""
         item_id = str(uuid.uuid4())
         if callback:
             self._pending[item_id] = callback
@@ -92,7 +75,6 @@ class Llm:
         self._ensure_worker()
 
     def prompt_sync(self, system: str = "", prompt: str = "") -> str | None:
-        """Synchronous wrapper around post()."""
         result: list[str | None] = []
         event = threading.Event()
 
@@ -105,7 +87,6 @@ class Llm:
         return result[0]
 
     def close(self) -> None:
-        """Stop worker thread and clean up server process."""
         self._stop_event.set()
         self._queue.put(None)
         if self._thread is not None:
@@ -118,58 +99,22 @@ class Llm:
             self._thread = threading.Thread(target=self._worker_loop, daemon=True)
             self._thread.start()
 
-    def _start_server(self) -> None:
-        if not self._manage_process or not self._server_cmd:
-            return
-        self._process = subprocess.Popen(self._server_cmd)
-        logger.info("LLM server started pid=%d", self._process.pid)
-        for _ in range(60):
-            if self._stop_event.is_set():
-                return
-            try:
-                resp = httpx.get(f"{self._endpoint}/models", timeout=1)
-                if resp.status_code == 200:
-                    logger.info("LLM server ready")
-                    return
-            except Exception:
-                pass
-            time.sleep(1)
-        logger.warning("LLM server did not become ready within 60 seconds")
-
-    def _stop_server(self) -> None:
-        if not self._manage_process:
-            return
-        with self._lock:
-            if self._process is None:
-                return
-            try:
-                self._process.terminate()
-                self._process.wait(timeout=5)
-            except Exception:
-                self._process.kill()
-            self._process = None
-            logger.info("LLM server terminated")
-
     def _worker_loop(self) -> None:
-        self._start_server()
-        try:
-            while not self._stop_event.is_set():
-                try:
-                    item = self._queue.get(timeout=self._idle_timeout)
-                except queue.Empty:
-                    break
+        while not self._stop_event.is_set():
+            try:
+                item = self._queue.get(timeout=self._idle_timeout)
+            except queue.Empty:
+                break
 
-                if item is None:
-                    break
+            if item is None:
+                break
 
-                try:
-                    text = self._call_llm(item.get("system", ""), item["prompt"])
-                    self._dispatch(item["id"], text)
-                except Exception:
-                    logger.exception("LLM call failed")
-                    self._dispatch(item["id"], None)
-        finally:
-            self._stop_server()
+            try:
+                text = self._call_llm(item.get("system", ""), item["prompt"])
+                self._dispatch(item["id"], text)
+            except Exception:
+                logger.exception("LLM call failed")
+                self._dispatch(item["id"], None)
 
     def _call_llm(self, system: str, user: str) -> str:
         headers = {"Content-Type": "application/json"}
@@ -205,11 +150,8 @@ class Llm:
             callback(text)
 
 
-_BACKEND_ALIASES = {"mlx": "mlx_server"}
-
-
-def create_llm(cfg) -> Llm:
-    """Build a configured Llm instance from DaglasConfig."""
+def create_llm(cfg) -> Llm | MlxModel:
+    """Build a configured Llm or MlxModel from DaglasConfig."""
     backend = (cfg.llm_backend or "").lower()
     backend = _BACKEND_ALIASES.get(backend, backend)
 
@@ -220,16 +162,23 @@ def create_llm(cfg) -> Llm:
         )
 
     defaults = BACKEND_DEFAULTS[backend]
+
+    if backend == "mlx_local":
+        model = cfg.llm_model or defaults["model"]
+        return MlxModel(
+            model=model,
+            max_tokens=getattr(cfg, "llm_max_tokens", 2048),
+            idle_timeout=getattr(cfg, "llm_idle_timeout", 20.0),
+            hf_cache_dir=getattr(cfg, "hf_cache_dir", ""),
+        )
+
     endpoint = cfg.llm_endpoint or defaults["endpoint"]
     model = cfg.llm_model or defaults["model"]
-    server_cmd = defaults.get("server_cmd", [])
 
     return Llm(
         endpoint=endpoint,
         model=model,
         api_key=cfg.llm_api_key or "",
         max_tokens=getattr(cfg, "llm_max_tokens", 2048),
-        manage_process=backend == "mlx_server",
-        server_cmd=server_cmd,
         idle_timeout=getattr(cfg, "llm_idle_timeout", 20.0),
     )

@@ -1,79 +1,206 @@
 from __future__ import annotations
 
+import os
+import sys
 import threading
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
-from daglas.lesson.llm import Llm, create_llm, VALID_BACKENDS, BACKEND_DEFAULTS
+from daglas.lesson.llm import Llm, VALID_BACKENDS, BACKEND_DEFAULTS, create_llm
+from daglas.lesson.llm_mlx import MlxModel, ModelState
+
+
+def _mock_mlx(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Install a mock mlx_lm module so MlxModel loads without real MLX."""
+    mock_tokenizer = MagicMock()
+    mock_tokenizer.apply_chat_template.return_value = "<chat>P</chat>"
+
+    mock = MagicMock()
+    mock.load.return_value = ("model", mock_tokenizer)
+    mock.generate.return_value = "hej världen"
+    monkeypatch.setitem(sys.modules, "mlx_lm", mock)
+
+    mock_core = MagicMock()
+    monkeypatch.setitem(sys.modules, "mlx", MagicMock())
+    monkeypatch.setitem(sys.modules, "mlx.core", mock_core)
+    return mock
 
 
 # =========================================================================
-# Internal helpers: _start_server / _stop_server
+# MlxModel — state machine
 # =========================================================================
 
 
-class TestStartServer:
-    def test_spawns_when_managing(self):
-        llm = Llm(
-            endpoint="http://test", manage_process=True, server_cmd=["echo", "hello"]
-        )
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        with (
-            patch("subprocess.Popen") as mock_popen,
-            patch("httpx.get", return_value=mock_resp),
-        ):
-            llm._start_server()
-            mock_popen.assert_called_once_with(["echo", "hello"])
+class TestMlxModelState:
+    def test_initial_state(self):
+        model = MlxModel()
+        assert model.state == ModelState.UNLOADED
 
-    def test_noop_when_not_managing(self):
-        llm = Llm(endpoint="http://test")
-        with patch("subprocess.Popen") as mock_popen, patch("httpx.get"):
-            llm._start_server()
-            mock_popen.assert_not_called()
+    def test_post_transitions_to_ready(self, monkeypatch):
+        _mock_mlx(monkeypatch)
+        model = MlxModel(idle_timeout=1.0)
 
-    def test_noop_when_no_cmd(self):
-        llm = Llm(endpoint="http://test", manage_process=True)
-        with patch("subprocess.Popen") as mock_popen, patch("httpx.get"):
-            llm._start_server()
-            mock_popen.assert_not_called()
+        event = threading.Event()
+        model.post("hi", callback=lambda t: event.set())
+        assert event.wait(timeout=3)
+
+        assert model.state == ModelState.READY
+
+        model.close()
+
+    def test_generation_transition(self, monkeypatch):
+        mock = _mock_mlx(monkeypatch)
+        model = MlxModel(idle_timeout=0.1)
+
+        event = threading.Event()
+        received = []
+
+        def callback(text):
+            received.append(text)
+            event.set()
+
+        model.post("hej", callback=callback)
+        assert event.wait(timeout=3)
+        assert received == [mock.generate.return_value]
+
+    def test_prompt_delegates_to_prompt_sync(self):
+        model = MlxModel()
+        with patch.object(model, "prompt_sync", return_value="hej") as mock_sync:
+            result = model.prompt(system="S", user="U")
+            assert result == "hej"
+            mock_sync.assert_called_once_with(system="S", prompt="U")
 
 
-class TestStopServer:
-    def test_terminates_process(self):
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        llm = Llm(endpoint="http://test", manage_process=True)
-        llm._process = mock_proc
-        llm._stop_server()
-        mock_proc.terminate.assert_called_once()
-        assert llm._process is None
+class TestMlxModelPostAndDispatch:
+    def test_post_enqueues_and_starts_worker(self):
+        model = MlxModel(idle_timeout=0.1)
 
-    def test_kills_on_terminate_timeout(self):
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        mock_proc.terminate.side_effect = OSError("timeout")
-        llm = Llm(endpoint="http://test", manage_process=True)
-        llm._process = mock_proc
-        llm._stop_server()
-        mock_proc.kill.assert_called_once()
+        with patch.object(model, "_ensure_worker") as mock_ensure:
+            model.post("hello")
+            mock_ensure.assert_called_once()
 
-    def test_noop_when_not_managing(self):
-        mock_proc = MagicMock()
-        llm = Llm(endpoint="http://test", manage_process=False)
-        llm._process = mock_proc
-        llm._stop_server()
-        mock_proc.terminate.assert_not_called()
+    def test_prompt_sync_returns_text(self, monkeypatch):
+        _mock_mlx(monkeypatch)
+        model = MlxModel(idle_timeout=0.1)
 
-    def test_noop_when_no_process(self):
-        llm = Llm(endpoint="http://test", manage_process=True)
-        llm._stop_server()
+        result = model.prompt_sync(system="S", prompt="P")
+        assert result is not None
+
+    def test_dispatches_none_on_error(self, monkeypatch):
+        _mock_mlx(monkeypatch)
+        model = MlxModel(idle_timeout=0.1)
+
+        event = threading.Event()
+        received = []
+
+        def callback(text):
+            received.append(text)
+            event.set()
+
+        with patch.object(model, "_generate", side_effect=ValueError("fail")):
+            model.post("hi", callback=callback)
+
+        assert event.wait(timeout=3)
+        assert received == [None]
+
+    def test_state_generating_during_call(self, monkeypatch):
+        _mock_mlx(monkeypatch)
+        model = MlxModel(idle_timeout=0.1)
+        state_during_call = []
+
+        orig_generate = model._generate
+
+        def spy_generate(system, user):
+            state_during_call.append(model.state)
+            return orig_generate(system, user)
+
+        model._generate = spy_generate  # type: ignore[method-assign]
+
+        model.prompt_sync("P")
+        assert ModelState.GENERATING in state_during_call
+
+
+class TestMlxModelIdleLifecycle:
+    def test_idle_unloads(self, monkeypatch):
+        _mock_mlx(monkeypatch)
+        model = MlxModel(idle_timeout=0.05)
+
+        model._ensure_worker()
+        model._thread.join(timeout=2)
+
+        assert model.state == ModelState.UNLOADED
+
+    def test_generation_during_idle_completes(self, monkeypatch):
+        _mock_mlx(monkeypatch)
+        model = MlxModel(idle_timeout=0.05)
+
+        event = threading.Event()
+        received = []
+
+        def callback(text):
+            received.append(text)
+            event.set()
+
+        model.post("hello", callback=callback)
+        assert event.wait(timeout=3)
+        assert received is not None
+
+    def test_restarts_after_idle(self, monkeypatch):
+        _mock_mlx(monkeypatch)
+        model = MlxModel(idle_timeout=0.05)
+
+        model._ensure_worker()
+        model._thread.join(timeout=2)
+        assert model.state == ModelState.UNLOADED
+
+        event = threading.Event()
+        received = []
+
+        def callback(text):
+            received.append(text)
+            event.set()
+
+        model.post("hello", callback=callback)
+        assert event.wait(timeout=3)
+        assert received is not None
+
+
+class TestMlxModelClose:
+    def test_close_unloads(self, monkeypatch):
+        _mock_mlx(monkeypatch)
+        model = MlxModel(idle_timeout=1.0)
+
+        model._ensure_worker()
+        model.close()
+        assert model.state == ModelState.UNLOADED
+
+    def test_close_without_worker(self):
+        model = MlxModel()
+        model.close()
+        assert model.state == ModelState.UNLOADED
+
+
+class TestMlxModelHfCacheDir:
+    def test_sets_hf_home_env(self, monkeypatch):
+        _mock_mlx(monkeypatch)
+        model = MlxModel(hf_cache_dir="~/.cache/hf")
+
+        model._load_model()
+        assert os.environ.get("HF_HOME", "").endswith(".cache/hf")
+
+    def test_does_not_set_when_empty(self, monkeypatch):
+        _mock_mlx(monkeypatch)
+        model = MlxModel(hf_cache_dir="")
+        old_hf = os.environ.get("HF_HOME", "__UNSET__")
+
+        model._load_model()
+        assert os.environ.get("HF_HOME", "__UNSET__") == old_hf
 
 
 # =========================================================================
-# _call_llm HTTP method
+# Llm — HTTP dispatch (unchanged)
 # =========================================================================
 
 
@@ -134,56 +261,21 @@ class TestCallLlm:
                 llm._call_llm("", "")
 
 
-# =========================================================================
-# Worker lifecycle: _ensure_worker
-# =========================================================================
-
-
-class TestEnsureWorker:
-    def test_starts_thread(self):
+class TestLlmWorkerLifecycle:
+    def test_ensure_worker_starts_thread(self):
         llm = Llm(endpoint="http://test", idle_timeout=1.0)
         llm._ensure_worker()
         assert llm._thread is not None
         assert llm._thread.is_alive()
 
-    def test_no_duplicate(self):
+    def test_ensure_worker_no_duplicate(self):
         llm = Llm(endpoint="http://test", idle_timeout=1.0)
         llm._ensure_worker()
         t1 = llm._thread
         llm._ensure_worker()
         assert llm._thread is t1
 
-    def test_restarts_after_exit(self):
-        llm = Llm(endpoint="http://test", idle_timeout=0.02)
-        event = threading.Event()
-
-        with patch.object(llm, "_call_llm", return_value="ok"):
-            llm.post("hi", callback=lambda t: event.set())
-
-        assert event.wait(timeout=2)
-        t1 = llm._thread
-
-        if t1 is not None:
-            t1.join(timeout=1)
-
-        llm._ensure_worker()
-        t2 = llm._thread
-        assert t2 is not None and t2.is_alive()
-
-
-# =========================================================================
-# Post and dispatch
-# =========================================================================
-
-
-class TestPost:
-    def test_calls_ensure_worker(self):
-        llm = Llm(endpoint="http://test", idle_timeout=1.0)
-        with patch.object(llm, "_ensure_worker") as mock_ensure:
-            llm.post("hello")
-            mock_ensure.assert_called_once()
-
-    def test_invokes_callback(self):
+    def test_post_invokes_callback(self):
         llm = Llm(endpoint="http://test", idle_timeout=0.1)
         event = threading.Event()
         received = []
@@ -205,41 +297,6 @@ class TestPost:
         assert event.wait(timeout=2)
         assert received == [None]
 
-
-# =========================================================================
-# prompt_sync and prompt convenience
-# =========================================================================
-
-
-class TestPromptSync:
-    def test_returns_result(self):
-        llm = Llm(endpoint="http://test", idle_timeout=0.1)
-        with patch.object(llm, "_call_llm", return_value="hej"):
-            result = llm.prompt_sync(system="S", prompt="P")
-            assert result == "hej"
-
-    def test_returns_none_on_error(self):
-        llm = Llm(endpoint="http://test", idle_timeout=0.1)
-        with patch.object(llm, "_call_llm", side_effect=ValueError("fail")):
-            result = llm.prompt_sync(system="S", prompt="P")
-            assert result is None
-
-
-class TestPrompt:
-    def test_delegates_to_prompt_sync(self):
-        llm = Llm(endpoint="http://test")
-        with patch.object(llm, "prompt_sync", return_value="hej") as mock_sync:
-            result = llm.prompt(system="S", user="U")
-            assert result == "hej"
-            mock_sync.assert_called_once_with(system="S", prompt="U")
-
-
-# =========================================================================
-# Worker loop: idle exit and server cleanup
-# =========================================================================
-
-
-class TestWorkerLoop:
     def test_exits_on_idle(self):
         llm = Llm(endpoint="http://test", idle_timeout=0.02)
         event = threading.Event()
@@ -253,53 +310,25 @@ class TestWorkerLoop:
             llm._thread.join(timeout=1)
         assert llm._thread is None or not llm._thread.is_alive()
 
-    def test_stops_server_after_idle(self):
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        llm = Llm(
-            endpoint="http://test",
-            idle_timeout=0.02,
-            manage_process=True,
-            server_cmd=["echo"],
-        )
-        llm._process = mock_proc
+    def test_prompt_sync_returns_result(self):
+        llm = Llm(endpoint="http://test", idle_timeout=0.1)
+        with patch.object(llm, "_call_llm", return_value="hej"):
+            result = llm.prompt_sync(system="S", prompt="P")
+            assert result == "hej"
 
-        event = threading.Event()
-        with (
-            patch.object(llm, "_call_llm", return_value="ok"),
-            patch.object(llm, "_start_server"),
-        ):
-            llm.post("hi", callback=lambda t: event.set())
-
-        assert event.wait(timeout=2)
-
-        if llm._thread is not None:
-            llm._thread.join(timeout=1)
-
-        mock_proc.terminate.assert_called_once()
+    def test_prompt_sync_returns_none_on_error(self):
+        llm = Llm(endpoint="http://test", idle_timeout=0.1)
+        with patch.object(llm, "_call_llm", side_effect=ValueError("fail")):
+            result = llm.prompt_sync(system="S", prompt="P")
+            assert result is None
 
 
-# =========================================================================
-# Close
-# =========================================================================
-
-
-class TestClose:
+class TestLlmClose:
     def test_stops_worker(self):
         llm = Llm(endpoint="http://test", idle_timeout=1.0)
         llm._ensure_worker()
         llm.close()
         assert llm._thread is None or not llm._thread.is_alive()
-
-    def test_kills_server(self):
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        llm = Llm(endpoint="http://test", manage_process=True)
-        llm._process = mock_proc
-        llm._ensure_worker()
-
-        llm.close()
-        mock_proc.terminate.assert_called_once()
 
     def test_close_without_worker(self):
         llm = Llm(endpoint="http://test")
@@ -320,43 +349,50 @@ class TestCreateLlm:
         cfg.llm_api_key = ""
         cfg.llm_max_tokens = 2048
         cfg.llm_idle_timeout = 20.0
+        cfg.hf_cache_dir = ""
         for k, v in overrides.items():
             setattr(cfg, k, v)
         return cfg
 
-    def test_ollama(self):
+    def test_ollama_returns_llm(self):
         cfg = self._cfg(llm_backend="ollama")
         llm = create_llm(cfg)
+        assert isinstance(llm, Llm)
         assert llm._endpoint == BACKEND_DEFAULTS["ollama"]["endpoint"]
         assert llm._model == BACKEND_DEFAULTS["ollama"]["model"]
-        assert not llm._manage_process
 
-    def test_mlx_server(self):
-        cfg = self._cfg(llm_backend="mlx_server")
+    def test_mlx_local_returns_mlx_model(self):
+        cfg = self._cfg(llm_backend="mlx_local")
         llm = create_llm(cfg)
-        assert llm._endpoint == BACKEND_DEFAULTS["mlx_server"]["endpoint"]
-        assert llm._manage_process
-        assert llm._server_cmd == BACKEND_DEFAULTS["mlx_server"]["server_cmd"]
+        assert isinstance(llm, MlxModel)
 
-    def test_llamacpp(self):
+    def test_mlx_alias_returns_mlx_model(self):
+        cfg = self._cfg(llm_backend="mlx")
+        llm = create_llm(cfg)
+        assert isinstance(llm, MlxModel)
+
+    def test_llamacpp_returns_llm(self):
         cfg = self._cfg(llm_backend="llamacpp")
         llm = create_llm(cfg)
-        assert not llm._manage_process
+        assert isinstance(llm, Llm)
 
     def test_override_endpoint(self):
         cfg = self._cfg(llm_backend="ollama", llm_endpoint="http://custom:8080/v1")
         llm = create_llm(cfg)
+        assert isinstance(llm, Llm)
         assert llm._endpoint == "http://custom:8080/v1"
 
-    def test_uses_custom_api_key(self):
+    def test_custom_api_key(self):
         cfg = self._cfg(llm_backend="ollama", llm_api_key="sk-custom")
         llm = create_llm(cfg)
+        assert isinstance(llm, Llm)
         assert llm._api_key == "sk-custom"
 
-    def test_mlx_alias_maps_to_mlx_server(self):
-        cfg = self._cfg(llm_backend="mlx")
+    def test_mlx_local_uses_hf_cache_dir(self):
+        cfg = self._cfg(llm_backend="mlx", hf_cache_dir="~/.cache/hf")
         llm = create_llm(cfg)
-        assert llm._manage_process
+        assert isinstance(llm, MlxModel)
+        assert llm._hf_cache_dir == "~/.cache/hf"
 
     def test_unknown_backend_raises(self):
         cfg = self._cfg(llm_backend="unknown")
@@ -371,7 +407,12 @@ class TestCreateLlm:
 
 class TestConstants:
     def test_valid_backends(self):
-        assert VALID_BACKENDS == {"ollama", "llamacpp", "mlx_server"}
+        assert VALID_BACKENDS == {"ollama", "llamacpp", "mlx_local"}
 
     def test_backend_defaults_keys(self):
         assert set(BACKEND_DEFAULTS.keys()) == VALID_BACKENDS
+
+    def test_mlx_local_defaults(self):
+        d = BACKEND_DEFAULTS["mlx_local"]
+        assert "model" in d
+        assert "endpoint" not in d

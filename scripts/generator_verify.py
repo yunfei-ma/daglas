@@ -5,39 +5,24 @@ Integration test: full lesson pipeline against the real backend.
 Loads config.yaml as configured — same backend, same endpoint, same model
 as ``daglas run --generate``.  Exercises:
 
-1. ``create_llm(cfg)`` — build a real Llm instance
+1. ``create_llm(cfg)`` — build a real Llm or MlxModel instance
 2. ``generate_lesson()`` — prompt the LLM with real templates and article
 3. ``format_email()`` — render the response into an Email
 
 Usage:
     python scripts/generator_verify.py
-
-Detects whether a server is already running on the configured endpoint.
-If so, connects without spawning a new one.  If not, lets Llm manage
-the server lifecycle (mlx_server only).
 """
 
 from __future__ import annotations
 
 import logging
-import socket
 import sys
-from urllib.parse import urlparse
 
 import daglas.config as daglas_config
 from daglas.config import load_config
 from daglas.lesson.formatter import format_email
 from daglas.lesson.generator import generate_lesson
 from daglas.lesson.llm import BACKEND_DEFAULTS, create_llm
-
-
-def _server_alive(endpoint: str) -> bool:
-    url = urlparse(endpoint)
-    host = url.hostname or "127.0.0.1"
-    port = url.port or 8081
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(2)
-        return s.connect_ex((host, port)) == 0
 
 
 def main() -> None:
@@ -53,23 +38,10 @@ def main() -> None:
     backend = cfg.llm_backend or ""
 
     print(f"Backend: {backend}")
-    print(f"Endpoint: {cfg.llm_endpoint or '(default)'}")
     print(f"Model: {cfg.llm_model or '(default)'}")
     print()
 
-    defaults = BACKEND_DEFAULTS.get(backend, {})
-    endpoint = cfg.llm_endpoint or defaults.get("endpoint", "http://127.0.0.1:8081/v1")
-
-    alive = _server_alive(endpoint)
-    if alive:
-        print(
-            f"Server already running on {endpoint} — connecting without lifecycle management"
-        )
-
     llm = create_llm(cfg)
-
-    if alive:
-        llm._manage_process = False
 
     articles = [
         {
@@ -99,7 +71,7 @@ def main() -> None:
         print(
             "ERROR: lesson generation returned None (validation rejected the response)"
         )
-        print("Check that the server is running and reachable.")
+        print("Check that the LLM backend is available.")
         sys.exit(1)
 
     email = format_email(lesson_text)

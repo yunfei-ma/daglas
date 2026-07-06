@@ -29,12 +29,13 @@ class DaglasConfig:
     sources: list[dict] = field(default_factory=list)
 
     # --- LLM ---
-    llm_backend: str = "mlx_server"
+    llm_backend: str = "mlx"
     llm_model: str = ""
     llm_endpoint: str = ""
     llm_api_key: str = ""
     llm_max_tokens: int = 2048
     llm_idle_timeout: float = 20.0
+    hf_cache_dir: str = ""
 
     # --- Admin ---
     admin_email: str = ""
