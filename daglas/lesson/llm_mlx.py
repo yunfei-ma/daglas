@@ -148,7 +148,7 @@ class MlxModel:
             {"role": "user", "content": user},
         ]
         prompt_text = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True
+            messages, add_generation_prompt=True, enable_thinking=True
         )
         return mlx_lm.generate(
             model, tokenizer, prompt_text, max_tokens=self._max_tokens

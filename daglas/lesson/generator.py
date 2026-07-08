@@ -3,9 +3,19 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import re
+
 import daglas.config
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_thought(text: str) -> str:
+    """Remove Gemma 4 thought channel content from model output."""
+    cleaned = re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"<\|turn>.*?<turn\|>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<\|.*?\|>", "", cleaned)
+    return cleaned.strip()
 
 
 def _read_prompt(name: str) -> str:
@@ -53,6 +63,7 @@ def generate_lesson(
     lesson_text = provider.prompt(system=system_prompt, user=user_prompt)
     if lesson_text is None:
         return None
+    lesson_text = _strip_thought(lesson_text)
     if not lesson_text.strip():
         return None
     return lesson_text

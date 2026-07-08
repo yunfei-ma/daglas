@@ -17,12 +17,19 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 
 import daglas.config as daglas_config
 from daglas.config import load_config
 from daglas.lesson.formatter import format_email
 from daglas.lesson.generator import generate_lesson
-from daglas.lesson.llm import BACKEND_DEFAULTS, create_llm
+from daglas.lesson.llm import create_llm
+
+
+def _fmt_secs(secs: float) -> str:
+    if secs < 60:
+        return f"{secs:.1f}s"
+    return f"{secs / 60:.1f}m {secs % 60:.0f}s"
 
 
 def main() -> None:
@@ -32,8 +39,10 @@ def main() -> None:
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
+    t0 = time.perf_counter()
     daglas_config.config = load_config()
     cfg = daglas_config.config
+    t_config = time.perf_counter()
 
     backend = cfg.llm_backend or ""
 
@@ -42,6 +51,7 @@ def main() -> None:
     print()
 
     llm = create_llm(cfg)
+    t_create = time.perf_counter()
 
     articles = [
         {
@@ -66,6 +76,7 @@ def main() -> None:
         level="beginner",
         vocab_count=5,
     )
+    t_gen = time.perf_counter()
 
     if lesson_text is None:
         print(
@@ -75,6 +86,7 @@ def main() -> None:
         sys.exit(1)
 
     email = format_email(lesson_text)
+    t_fmt = time.perf_counter()
 
     print("=" * 60)
     print("SUBJECT:", email.subject)
@@ -84,6 +96,13 @@ def main() -> None:
     print()
     print("=" * 60)
     print("HTML length:", len(email.html_body), "chars")
+    print()
+    print("--- Timings ---")
+    print(f"  Config load:  {_fmt_secs(t_config - t0):>8s}")
+    print(f"  LLM create:   {_fmt_secs(t_create - t_config):>8s}")
+    print(f"  Generate:     {_fmt_secs(t_gen - t_create):>8s}")
+    print(f"  Format:       {_fmt_secs(t_fmt - t_gen):>8s}")
+    print(f"  Total:        {_fmt_secs(t_fmt - t0):>8s}")
     print("=" * 60)
 
     llm.close()
