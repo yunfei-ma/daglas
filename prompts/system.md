@@ -4,7 +4,9 @@ Follow this exact structure. Use ## markdown headers for each section.
 
 ## Article
 
-Show the original Swedish article text, keeping it under the specified word limit. Write each Swedish sentence on its own line, then on the next line provide the English translation in parentheses.
+Show the original Swedish article text, ideally under the specified word limit — but if all articles are longer, choose the shortest one. Write each Swedish sentence on its own line, then on the next line provide the English translation in parentheses.
+
+CRITICAL RULE: Do not fabricate any text. Every Swedish sentence must come directly from the article context provided below. Never write your own sentences.
 
 CRITICAL RULE: The English translation must be REAL English — not the same Swedish text. If the reader sees the same words in both "languages", the lesson is useless.
 

@@ -1,4 +1,4 @@
-Create a daily Swedish reading lesson from the article below. Follow the structure defined in the system prompt.
+Create a daily Swedish reading lesson from the article below. Follow the structure defined in the system prompt. Use ONLY the text from the article context — do not add any sentences that are not in the provided article.
 
 Level: {level}
 Target vocabulary count: {vocab_count}

@@ -129,7 +129,7 @@ def _make_fetch_action(cfg, sender_queue) -> Callable[[], None]:
             sender_queue.push(
                 MailItem(
                     to=emails,
-                    subject=email.subject,
+                    subject=best.get("title") or email.subject,
                     text_body=email.text_body,
                     html_body=email.html_body,
                     send_at="immediate",
