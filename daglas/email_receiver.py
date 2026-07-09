@@ -65,20 +65,16 @@ class EmailReceiver:
     def _spam_folder_names() -> list[str]:
         return ["[Gmail]/Spam", "[Gmail]/Skr\u00e4ppost", "[Gmail]/Bulk Mail", "Spam"]
 
-    def _scan_folder(self, conn, folder: str) -> int:
+    def _scan_folder(self, conn, folder: str) -> None:
         conn.select(folder)
         _, data = conn.search(None, "UNSEEN")
         msg_ids = data[0].split() if data[0] else []
-        count = 0
         for msg_id in msg_ids:
             try:
                 if self._parse_and_push(conn, msg_id):
-                    count += 1
+                    logger.info("Scanned folder=%s", folder)
             except Exception as e:
                 logger.error("Failed to process message %s: %s", msg_id, e)
-        if count:
-            logger.info("Scanned folder=%s unseen=%d", folder, count)
-        return count
 
     def _find_spam_folder(self, conn) -> str | None:
         try:
@@ -93,19 +89,17 @@ class EmailReceiver:
                     return candidate
         return None
 
-    def poll(self) -> int:
-        logger.info("Checking for new email...")
-        count = 0
+    def poll(self) -> None:
         try:
             conn = self._connect()
         except Exception as e:
             logger.error("IMAP connection failed: %s", e)
-            return 0
+            return
         try:
-            count += self._scan_folder(conn, "INBOX")
+            self._scan_folder(conn, "INBOX")
             spam_folder = self._find_spam_folder(conn)
             if spam_folder:
-                count += self._scan_folder(conn, spam_folder)
+                self._scan_folder(conn, spam_folder)
         except Exception as e:
             logger.error("IMAP search failed: %s", e)
         finally:
@@ -113,4 +107,3 @@ class EmailReceiver:
                 conn.logout()
             except Exception:
                 pass
-        return count

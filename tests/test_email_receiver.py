@@ -46,8 +46,7 @@ class TestPoll:
             return conn
 
         with patch.object(receiver, "_connect", mock_connect):
-            count = receiver.poll()
-        assert count == 1
+            receiver.poll()
         queue.push.assert_called_once()
         args = queue.push.call_args
         assert args[0][0] == "incoming"
@@ -78,8 +77,7 @@ class TestPoll:
             return MockIMAP()
 
         with patch.object(receiver, "_connect", mock_connect):
-            count = receiver.poll()
-        assert count == 0
+            receiver.poll()
         queue.push.assert_not_called()
 
     def test_poll_imap_unreachable(self, tmp_path):
@@ -90,8 +88,7 @@ class TestPoll:
             raise ConnectionError("Connection refused")
 
         with patch.object(receiver, "_connect", broken_connect):
-            count = receiver.poll()
-        assert count == 0
+            receiver.poll()
         queue.push.assert_not_called()
 
     def test_poll_bad_message_skips(self, tmp_path):
@@ -107,8 +104,7 @@ class TestPoll:
             return conn
 
         with patch.object(receiver, "_connect", mock_connect):
-            count = receiver.poll()
-        assert count == 1
+            receiver.poll()
         assert queue.push.call_count == 1
 
     def test_raw_email_has_all_fields(self, tmp_path):
