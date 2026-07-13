@@ -21,6 +21,7 @@ import time
 
 import daglas.config as daglas_config
 from daglas.config import load_config
+from daglas.context_pool import ContextPool
 from daglas.lesson.formatter import format_email
 from daglas.lesson.generator import generate_lesson
 from daglas.lesson.llm import create_llm
@@ -53,26 +54,25 @@ def main() -> None:
     llm = create_llm(cfg)
     t_create = time.perf_counter()
 
-    articles = [
-        {
-            "title": "Sverige inför nya regler för kontanter",
-            "body": (
-                "Från och med nästa år kommer nya regler att införas som "
-                "gör det enklare för butiker att vägra kontanter. "
-                "Regeringen menar att det är en naturlig utveckling i "
-                "det allt mer digitala samhället. Men kritiker varnar "
-                "för att äldre och personer på landsbygden kan få "
-                "problem om kontanterna försvinner helt. "
-                "En utredning visar att endast 10 procent av "
-                "befolkningen använder kontanter idag."
-            ),
-        }
-    ]
+    pool = ContextPool()
+    articles = pool.retrieve_articles()
+    if not articles:
+        print("ERROR: no articles in context pool (data/context_pool.jsonl)")
+        print("Run the fetch pipeline first to populate the pool.")
+        sys.exit(1)
 
-    print("Generating lesson...")
+    best = max(articles, key=lambda a: a.get("score") or 0)
+    print(
+        f"Pool: {len(articles)} articles, selected: {best.get('title', '(no title)')}"
+    )
+
+    print("---")
+    print("Generating lesson... [title] ", best.get("title", "(no title)"))
+    print("lesson [body] ", best.get("body"))
+    print("---")
     lesson_text = generate_lesson(
         llm,
-        articles,
+        [best],
         level="beginner",
         vocab_count=5,
     )

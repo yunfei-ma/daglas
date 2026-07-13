@@ -1,10 +1,16 @@
-Create a daily Swedish reading lesson from the article below. Follow the structure defined in the system prompt. Use ONLY the text from the article context — do not add any sentences that are not in the provided article.
+Create today's Swedish reading lesson from the article below, following
+the structure defined in the system prompt.
 
 Level: {level}
 Target vocabulary count: {vocab_count}
-Article word limit (max Swedish words): {article_word_limit}
+Max Swedish words to select for the Article section: {article_word_limit}
 
-REMEMBER: English translations must be real English, never the same Swedish text repeated in parentheses.
+When choosing which sentences to show in the Article section, select
+enough consecutive or representative sentences to give a coherent excerpt,
+but do not exceed {article_word_limit} Swedish words in total. If the
+article is shorter than this limit, use the whole thing.
 
-Article context:
+Article context (between the markers below):
+<<<ARTICLE_START>>>
 {context}
+<<<ARTICLE_END>>>

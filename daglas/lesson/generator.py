@@ -66,4 +66,9 @@ def generate_lesson(
     lesson_text = _strip_thought(lesson_text)
     if not lesson_text.strip():
         return None
+
+    title = context_articles[0].get("title", "").strip()
+    if title:
+        lesson_text = f"# {title}\n\n{lesson_text}"
+
     return lesson_text
