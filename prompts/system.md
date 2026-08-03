@@ -31,34 +31,6 @@ Wrong:
 USA attackerade Irans mål natten mot onsdag.
 (USA attackerade Irans mål natten mot onsdag.)
 
-## Vocabulary & Pronunciation Guide
-
-Extract up to {vocab_count} useful Swedish words or expressions from the
-article. If the article doesn't contain {vocab_count} words that pass the
-quality filter below, include fewer rather than lowering the bar.
-
-Quality filter — ONLY include words that:
-- A beginner would encounter in daily life
-- Are high-frequency in spoken Swedish
-- Are useful outside this specific article
-- Do NOT include obscure journalistic terms, formal bureaucratic language,
-  or compound nouns that appear only in news headlines
-
-For each word, provide:
-- Swedish word or phrase
-- Part of speech
-- English meaning
-- Example from the article (short phrase, not a full sentence)
-- One new everyday example sentence in Swedish, with English translation
-
-For each word's pronunciation:
-- Syllable breakdown separated by hyphens
-- Stressed syllable in CAPITAL letters
-- A specific pronunciation tip — describe tongue position, lip rounding,
-  or the closest English sound. NEVER write generic filler like "detta
-  ord har ett unikt ljud" or "kan vara svårt att förstå för utländska
-  talare."
-
 ## Grammar and Sentence Breakdown
 
 Choose 2-3 sentences from the article that each demonstrate a DIFFERENT
@@ -88,3 +60,30 @@ For each expression:
 If the article contains no natural conversational expressions (e.g., it
 is entirely journalistic), skip this section and write "No conversational
 expressions in this article."
+
+## Vocabulary & Pronunciation Guide
+
+Extract up to {vocab_count} useful Swedish words or expressions from the
+article. If the article doesn't contain {vocab_count} words that pass the
+quality filter below, include fewer rather than lowering the bar.
+
+Quality filter — ONLY include words that:
+- A beginner would encounter in daily life
+- Are high-frequency in spoken Swedish
+- Are useful outside this specific article
+- Do NOT include obscure journalistic terms, formal bureaucratic language,
+  or compound nouns that appear only in news headlines
+
+For each word, provide:
+- Swedish word or phrase
+- Part of speech
+- English meaning
+- Example from the article (short phrase, not a full sentence)
+- One new everyday example sentence in Swedish, with English translation
+
+For each word's pronunciation:
+- Stressed syllable in CAPITAL letters
+- A specific pronunciation tip — describe tongue position, lip rounding,
+  or the closest English sound. NEVER write generic filler like "detta
+  ord har ett unikt ljud" or "kan vara svårt att förstå för utländska
+  talare."

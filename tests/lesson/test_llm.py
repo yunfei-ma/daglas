@@ -122,6 +122,27 @@ class TestMlxModelPostAndDispatch:
         assert ModelState.GENERATING in state_during_call
 
 
+class TestMlxModelGenerateThinking:
+    def test_passes_thinking_when_enabled(self, monkeypatch):
+        mock = _mock_mlx(monkeypatch)
+        model = MlxModel(enable_thinking=True)
+        model._model_ref = mock.load.return_value
+        model._generate("S", "U")
+        _, tokenizer = mock.load.return_value
+        assert (
+            tokenizer.apply_chat_template.call_args.kwargs.get("enable_thinking")
+            is True
+        )
+
+    def test_omits_thinking_when_disabled(self, monkeypatch):
+        mock = _mock_mlx(monkeypatch)
+        model = MlxModel(enable_thinking=False)
+        model._model_ref = mock.load.return_value
+        model._generate("S", "U")
+        _, tokenizer = mock.load.return_value
+        assert "enable_thinking" not in tokenizer.apply_chat_template.call_args.kwargs
+
+
 class TestMlxModelIdleLifecycle:
     def test_idle_unloads(self, monkeypatch):
         _mock_mlx(monkeypatch)
@@ -350,6 +371,7 @@ class TestCreateLlm:
         cfg.llm_max_tokens = 2048
         cfg.llm_idle_timeout = 20.0
         cfg.hf_cache_dir = ""
+        cfg.llm_enable_thinking = False
         for k, v in overrides.items():
             setattr(cfg, k, v)
         return cfg
@@ -393,6 +415,18 @@ class TestCreateLlm:
         llm = create_llm(cfg)
         assert isinstance(llm, MlxModel)
         assert llm._hf_cache_dir == "~/.cache/hf"
+
+    def test_mlx_local_thinking_defaults_off(self):
+        cfg = self._cfg(llm_backend="mlx")
+        llm = create_llm(cfg)
+        assert isinstance(llm, MlxModel)
+        assert llm._enable_thinking is False
+
+    def test_mlx_local_enable_thinking_from_config(self):
+        cfg = self._cfg(llm_backend="mlx", llm_enable_thinking=True)
+        llm = create_llm(cfg)
+        assert isinstance(llm, MlxModel)
+        assert llm._enable_thinking is True
 
     def test_unknown_backend_raises(self):
         cfg = self._cfg(llm_backend="unknown")

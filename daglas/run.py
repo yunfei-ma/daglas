@@ -126,20 +126,26 @@ def _make_fetch_action(cfg, sender_queue) -> Callable[[], None]:
                 continue
 
             email = format_email(lesson_text)
+            subject = best.get("title") or email.subject
+            recipients = emails
+            if cfg.debug_mode:
+                subject = f"[debug] {subject}"
+                recipients = [cfg.admin_email] if cfg.admin_email else []
             sender_queue.push(
                 MailItem(
-                    to=emails,
-                    subject=best.get("title") or email.subject,
+                    to=recipients,
+                    subject=subject,
                     text_body=email.text_body,
                     html_body=email.html_body,
                     send_at="immediate",
                 )
             )
             logger.info(
-                "Lesson queued: group=(level=%s vcount=%d) recipients=%d",
+                "Lesson queued: group=(level=%s vcount=%d) recipients=%d%s",
                 group_level,
                 group_vcount,
-                len(emails),
+                len(recipients),
+                " [debug]" if cfg.debug_mode else "",
             )
 
     return fetch
@@ -193,7 +199,7 @@ def main() -> None:
         "send": sender_queue.dispatch_due,
     }
 
-    logger.info("Dagläs heartbeat started")
+    logger.info("Dagläs heartbeat started (magic_string=%s)", cfg.magic_string)
     try:
         _run_loop(heartbeat, actions)
     except KeyboardInterrupt:

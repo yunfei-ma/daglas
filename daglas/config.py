@@ -35,6 +35,10 @@ class DaglasConfig:
     llm_api_key: str = ""
     llm_max_tokens: int = 2048
     llm_idle_timeout: float = 20.0
+    # Gemma-4 thinking channel. Only recommended for the gemma-4-26B model
+    # family; other models ignore or reject this kwarg. Set from config.yaml
+    # via `llm_enable_thinking`.
+    llm_enable_thinking: bool = False
     hf_cache_dir: str = ""
 
     # --- Admin ---
@@ -68,6 +72,10 @@ class DaglasConfig:
     fetch_time: str = "06:00"
     context_fetcher_poll_interval: int = 86400  # check once daily after initial fetch
     send_time: str = "07:00"
+
+    # --- Debug ---
+    debug_mode: bool = False
+    magic_string: str = ""
 
     # --- Paths ---
     data_dir: str = "data"

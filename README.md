@@ -101,18 +101,34 @@ Install to run automatically on schedule:
 
 ```bash
 python scripts/install_launchd.py
+```
+
+The install script:
+
+1. Copies the project to `~/dagläs`
+2. Rewrites `data_dir`/`prompts_dir` to relative paths in the copy
+3. Sets `magic_string: target` in the copy's `config.yaml` (source uses `orient`)
+4. Loads a user-level LaunchAgent (`~/Library/LaunchAgents/com.daglas.heartbeat.plist`)
+5. Prints instructions for removing any old system daemon (requires `sudo`)
+
+The agent runs persistently (`KeepAlive` + `RunAtLoad`), restarts on crash,
+and dispatches the daily lesson at the configured schedule.
+
+To uninstall:
+
+```bash
 python scripts/uninstall_launchd.py
 ```
 
-Two services:
+This removes the LaunchAgent and deletes `~/dagläs`. If a system daemon
+exists at `/Library/LaunchDaemons/com.daglas.heartbeat.plist`, the script
+prints `sudo` commands to remove it manually.
 
-| Service | Mode | Behaviour |
-|---|---|---|
-| `com.daglas.lessonGenerator` | `StartInterval` 1800s | Fires `daglas --generate` via `python -m daglas.run --generate` every 30 min |
-| `com.daglas.runner` | `KeepAlive` + `RunAtLoad` | Runs `daglas` via `python -m daglas.run` persistently (IMAP, sender queue), restarts on crash |
+### Debug mode
 
-launchd tracks wall time even across sleep/wake cycles, so the daily
-lesson fires at the correct time even if the Mac was asleep.
+Set `debug_mode: true` in `config.yaml` to send lessons only to the admin
+email with `[debug]` prefixed to the subject line. Useful for testing without
+bothering subscribers.
 
 ## Configuration
 
@@ -130,6 +146,13 @@ All settings in `config.yaml` (copy from `daglas/config_default.yaml`).
 | `article_word_limit` | `100` | Word limit per article displayed in lesson |
 | `lesson_level` | `beginner` | Target difficulty for generated lesson |
 | `vocab_count` | `5` | Vocabulary words per lesson |
+
+### Debug
+
+| Key | Default | Description |
+|---|---|---|
+| `debug_mode` | `false` | Send lessons to admin only, subject prefixed with `[debug]` |
+| `magic_string` | `""` | Printed on startup to identify which config.yaml is loaded (`orient` = source, `target` = installed copy) |
 
 ### Sources
 
@@ -215,8 +238,8 @@ daglas/
 pyproject.toml                  # PEP 621 package config (version, deps, entry point)
 prompts/                       # Versioned LLM prompt templates
 scripts/
-├── install_launchd.py         # Generate & load launchd plists
-├── uninstall_launchd.py       # Unload & remove launchd plists
+├── install_launchd.py         # Copy project to ~/dagläs, load LaunchAgent
+├── uninstall_launchd.py       # Remove LaunchAgent and ~/dagläs
 ├── config_verify.py           # Smoke-test config loading
 ├── context_fetcher_verify.py  # Smoke-test article fetch
 ├── email_receiver_verify.py   # Smoke-test IMAP connection

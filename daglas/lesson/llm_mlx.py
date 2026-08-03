@@ -30,11 +30,16 @@ class MlxModel:
         max_tokens: int = 2048,
         idle_timeout: float = 20.0,
         hf_cache_dir: str = "",
+        enable_thinking: bool = False,
     ):
         self._model = model
         self._max_tokens = max_tokens
         self._idle_timeout = idle_timeout
         self._hf_cache_dir = hf_cache_dir
+        # Gemma-4 only: turns on the hidden reasoning channel. Managed via
+        # config.yaml `llm_enable_thinking`; do NOT enable for other models —
+        # non-Gemma chat templates ignore or reject this kwarg.
+        self._enable_thinking = enable_thinking
 
         self._state: ModelState = ModelState.UNLOADED
         self._model_ref: tuple | None = None
@@ -147,9 +152,17 @@ class MlxModel:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
-        prompt_text = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, enable_thinking=True
-        )
+        # `enable_thinking` is a Gemma-4-only chat-template option. Only pass
+        # it when config.yaml `llm_enable_thinking` is true — for any other
+        # model the kwarg is ignored (or rejected), so never enable by default.
+        if self._enable_thinking:
+            prompt_text = tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, enable_thinking=True
+            )
+        else:
+            prompt_text = tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True
+            )
         return mlx_lm.generate(
             model, tokenizer, prompt_text, max_tokens=self._max_tokens
         )

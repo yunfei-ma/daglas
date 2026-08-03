@@ -170,6 +170,7 @@ def create_llm(cfg) -> Llm | MlxModel:
             max_tokens=getattr(cfg, "llm_max_tokens", 2048),
             idle_timeout=getattr(cfg, "llm_idle_timeout", 20.0),
             hf_cache_dir=getattr(cfg, "hf_cache_dir", ""),
+            enable_thinking=bool(getattr(cfg, "llm_enable_thinking", False)),
         )
 
     endpoint = cfg.llm_endpoint or defaults["endpoint"]
